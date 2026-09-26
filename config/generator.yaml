@@ -1,0 +1,62 @@
+# ===== World Generator config (Trung) =====
+# Đổi số ở đây để có "nhà máy khác", không cần sửa code.
+
+day_start: "06:00"        # giờ bắt đầu ngày mô phỏng
+day_hours: 16             # 06:00 -> 22:00 (2 ca)
+tz_offset_hours: 7
+
+resources:                # số đơn vị mỗi loại
+  amr: 6
+  worker: 3               # người tách pack tại cổng (stage "packer")
+  agv: 4
+
+origin_id: STORE-1        # v0.1 chỉ có 1 kho
+
+# Mỗi hệ thống dùng mã riêng -> Data Layer phải map về ID chuẩn (L1, M01...)
+lines:
+  L1: {wms_code: LINE_A, agv_station: ST-A1}
+  L2: {wms_code: LINE_B, agv_station: ST-B1}
+materials:
+  M01: {wms_code: MAT-01}
+  M02: {wms_code: MAT-02}
+  M03: {wms_code: MAT-03}
+  M04: {wms_code: MAT-04}
+  M05: {wms_code: MAT-05}
+  M06: {wms_code: MAT-06}
+
+# Kế hoạch sản xuất x BOM -> nhu cầu vật tư (demand sinh từ plan, không random thuần)
+products:
+  P100: {line: L1, base_units_per_hour: 120, bom_packs_per_unit: {M01: 0.20, M02: 0.20, M03: 0.10}}
+  P200: {line: L2, base_units_per_hour: 100, bom_packs_per_unit: {M04: 0.25, M05: 0.20, M06: 0.10}}
+# Hệ số theo giờ (16 giá trị, 06h..21h): đầu ca thấp, giữa ca cao, nghỉ trưa/đổi ca giảm
+hour_profile: [0.7, 1.0, 1.15, 1.2, 1.1, 0.8, 1.0, 1.1, 0.6, 1.0, 1.15, 1.2, 1.1, 0.8, 1.0, 0.7]
+plan_noise_cv: 0.05
+
+packs_per_trip: {min: 2, max: 6}    # số pack mỗi lượt giao
+need_by_buffer_min: 30              # line cần hàng sau khi phát yêu cầu bao lâu
+
+# Thời gian (phút). cv = độ dao động tương đối, dùng phân phối lognormal
+service:
+  amr_travel_out: {mean: 4.0, cv: 0.25}   # kho -> cổng
+  amr_return:     {mean: 3.0, cv: 0.25}   # cổng -> kho
+  pack_setup:     {mean: 1.5, cv: 0.30}   # nhận thùng, chuẩn bị
+  pack_per_pack:  {mean: 1.0, cv: 0.30}   # tách 1 pack
+  agv_travel:     {mean: 3.0, cv: 0.20}   # cổng -> line
+  agv_return:     {mean: 2.5, cv: 0.20}
+
+breakdown:
+  amr_fault_per_hour: 0.15                # kỳ vọng số lần AMR hỏng mỗi giờ (cả đội)
+  amr_repair: {mean: 20.0, cv: 0.5}
+  pack_outlier_prob: 0.03                 # lượt tách pack lâu bất thường
+  pack_outlier_factor: {min: 2.0, max: 4.0}
+
+labor:
+  shifts:
+    - {name: S1, start: "06:00", end: "14:00"}
+    - {name: S2, start: "14:00", end: "22:00"}
+  break_min: 15
+  break_offsets_min: [120, 150, 180]      # mỗi worker nghỉ lệch nhau, tính từ đầu ca
+
+excel:
+  entry_every_min: 120      # tổ trưởng nhập log đóng gói mỗi 2 giờ -> dữ liệu trễ
+  missing_row_prob: 0.05    # nhập tay -> đôi khi thiếu dòng
