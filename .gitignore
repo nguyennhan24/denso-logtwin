@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.ipynb_checkpoints/
+# Dữ liệu sinh ra tái tạo được từ seed -> không commit
+data/raw/*
+data/unified/*
+data/results/*
+!data/**/.gitkeep
