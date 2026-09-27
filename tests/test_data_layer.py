@@ -159,3 +159,78 @@ def test_orphan_amr_task_is_quarantined(raw):
     amr.loc[i, "task_id"] = "T-9999"
     _, q = validate_feeds(raw.with_feeds(amr=amr))
     assert list(q["row_index"]) == [i] and "DISPATCH" in q["reason"].iloc[0]
+
+
+# ======================================================== Bước 3: ghép ID -> journey
+from src.data_layer.mapper import JOURNEY_COLS, build_journey, match_stats  # noqa: E402
+
+END = 10_000.0     # "cuối ngày": sau mọi sự kiện
+SEC = 1 / 60       # 1 giây tính bằng phút
+
+
+@pytest.fixture(scope="module")
+def clean_full(raw):
+    return validate_feeds(raw)[0]
+
+
+@pytest.fixture(scope="module")
+def journey_end(clean_full):
+    return build_journey(clean_full, END)
+
+
+def test_journey_shape(journey_end, raw):
+    assert list(journey_end.columns) == JOURNEY_COLS
+    assert journey_end["request_id"].is_unique
+    assert len(journey_end) == len(raw.wms)
+    assert journey_end["line_id"].isin(["L1", "L2"]).all()
+    assert journey_end["material_id"].str.match(r"^M0\d$").all()
+
+
+def test_journey_matches_truth(journey_end, truth):
+    m = journey_end.merge(truth, left_on="request_id", right_on="pick_no", how="inner",
+                          suffixes=("", "_truth"))
+    assert len(m) == len(truth)
+    pairs = {
+        "created_min": "arrival_min",
+        "amr_dispatch_min": "amr_DISPATCH",
+        "amr_arrive_gate_min": "amr_ARRIVE_GATE",
+        "packer_start_min": "amr_RELEASE",
+        "agv_load_min": "agv_LOAD",
+        "delivered_min": "line_DELIVERED",
+    }
+    for ours, theirs in pairs.items():
+        both = m[[ours, theirs]]
+        assert (both[ours].isna() == both[theirs].isna()).all(), ours
+        d = (both[theirs] - both[ours]).dropna()
+        assert ((d >= -1e-9) & (d < SEC)).all(), f"{ours}: lệch tối đa {d.abs().max()}"
+    assert (m["task_id"] == m["amr_task_id"]).all()
+    assert (m["material_id"] == m["material_id_truth"]).all()
+    assert (m["line_id"] == m["line_id_truth"]).all() and (m["quantity"] == m["packs"]).all()
+
+    # packer_finish từ Excel: khớp truth ở mức phút, và KHÔNG tự điền dòng Excel bị thiếu
+    ex = m.dropna(subset=["packer_finish_min"])
+    d = ex["packer_FINISH"] - ex["packer_finish_min"]
+    assert ((d >= -1e-6) & (d < 1)).all()
+    missing = m[m["packer_finish_min"].isna() & m["agv_load_min"].notna()]
+    assert len(missing) > 0      # Excel thiếu ~5% dòng -> có lượt đã lên AGV mà không có finish
+
+
+def test_match_rates(clean_full, journey_end):
+    st = match_stats(clean_full, journey_end)
+    print("\nmatch_stats seed 42:", {k: {kk: v[kk] for kk in ("total", "matched", "rate")} for k, v in st.items()})
+    assert st["amr"]["rate"] >= 0.99
+    assert st["agv"]["rate"] >= 0.99
+    assert st["excel"]["rate"] == 1.0
+
+
+def test_journey_as_of_has_no_future(clean_full):
+    t = at("10:00")
+    j = build_journey(clean_full, t)
+    for c in [c for c in JOURNEY_COLS if c.endswith("_min") and c != "need_by_min"]:
+        assert (j[c].dropna() <= t).all(), c
+    assert j["packer_finish_min"].notna().sum() > 0
+
+
+def test_journey_at_day_start_is_empty(clean_full):
+    j = build_journey(clean_full, 0.0)
+    assert list(j.columns) == JOURNEY_COLS and len(j) == 0
