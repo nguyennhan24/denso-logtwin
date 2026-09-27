@@ -234,3 +234,158 @@ def test_journey_as_of_has_no_future(clean_full):
 def test_journey_at_day_start_is_empty(clean_full):
     j = build_journey(clean_full, 0.0)
     assert list(j.columns) == JOURNEY_COLS and len(j) == 0
+
+
+# ======================================================== Bước 4: freshness + state
+import json  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+from contracts.validate_contracts import FEEDS as CONTRACT_FEEDS, check_state  # noqa: E402
+from src.data_layer.freshness import feed_updated_at, freshness_report  # noqa: E402
+from src.data_layer.state_builder import build_diagnostics, build_state, infer_wip  # noqa: E402
+
+CHECK_TIMES = ["08:00", "10:00", "14:00", "18:00"]
+
+
+def state_at(raw_feeds, t):
+    """Chuỗi chuẩn: snapshot -> validate -> journey -> state (+ wip để so truth)."""
+    clean, _ = validate_feeds(snapshot(raw_feeds, t))
+    j = build_journey(clean, t)
+    return clean, j, build_state(clean, j, t, DL_CFG)
+
+
+def truth_stage_sets(truth, t):
+    """Stage đúng của từng lượt giao tại t theo truth. Feed ghi giờ cắt xuống giây -> làm tương tự."""
+    def known(c):
+        return np.floor(truth[c] * 60 + 1e-6) / 60 <= t
+
+    masks = {
+        ("amr", "queued"): known("arrival_min") & ~known("amr_DISPATCH"),
+        ("amr", "active"): known("amr_DISPATCH") & ~known("amr_ARRIVE_GATE"),
+        ("packer", "queued"): known("amr_ARRIVE_GATE") & ~known("packer_START"),
+        ("packer", "active"): known("packer_START") & ~known("packer_FINISH"),
+        ("agv", "queued"): known("packer_FINISH") & ~known("agv_LOAD"),
+        ("agv", "active"): known("agv_LOAD") & ~known("line_DELIVERED"),
+    }
+    return {k: set(truth.loc[m, "pick_no"]) for k, m in masks.items()}
+
+
+def state_sets(state):
+    out = {(s, st): set() for s in ("amr", "packer", "agv") for st in ("queued", "active")}
+    for st, key in (("queued", "queued_jobs"), ("active", "active_jobs")):
+        for job in state[key]:
+            out[(job["stage"], st)].add(job["request"]["request_id"])
+    return out
+
+
+def test_feed_updated_at(raw):
+    t = at("10:00")
+    fu = feed_updated_at(raw, t)             # đưa cả ngày vào: hàm vẫn phải tự cắt theo as_of
+    assert set(fu) == set(CONTRACT_FEEDS)
+    as_of = datetime.fromisoformat("2026-10-01T10:00:00+07:00")
+    for k, v in fu.items():
+        assert v.endswith("+07:00") and datetime.fromisoformat(v) <= as_of, k
+    assert fu["excel"] == "2026-10-01T10:00:00+07:00"      # đợt nhập Excel lúc 10:00
+    assert fu["production"] == fu["labor"] == "2026-10-01T06:00:00+07:00"
+    rep = freshness_report(raw, t)
+    assert rep["excel"]["source_type"] == "manual" and rep["amr"]["source_type"] == "stream"
+    assert all(r["lag_min"] >= 0 for r in rep.values())
+    assert rep["production"]["lag_min"] == 240.0
+
+
+@pytest.mark.parametrize("hhmm", CHECK_TIMES)
+def test_state_passes_contract(raw, hhmm):
+    _, _, st = state_at(raw, at(hhmm))
+    assert check_state(st) == [], check_state(st)
+    json.dumps(st)                                          # xuất JSON được
+    assert st["as_of"] == f"2026-10-01T{hhmm}:00+07:00"
+
+
+@pytest.mark.parametrize("hhmm", CHECK_TIMES)
+def test_state_amr_matches_truth_exactly(raw, truth, hhmm):
+    t = at(hhmm)
+    ours, real = state_sets(state_at(raw, t)[2]), truth_stage_sets(truth, t)
+    assert ours[("amr", "queued")] == real[("amr", "queued")]
+    assert ours[("amr", "active")] == real[("amr", "active")]
+    assert ours[("packer", "queued")] == real[("packer", "queued")]   # RELEASE có trong stream -> chính xác
+    assert ours[("agv", "active")] == real[("agv", "active")]         # load/deliver có trong stream
+
+
+def test_state_packer_agv_error_table(raw, truth):
+    """Bảng sai số packer/agv (phần phải ước lượng vì Excel trễ). In ra để theo dõi.
+
+    Ngưỡng: lệch số lượng ≤ 1 ở mỗi ô tại 4 mốc. Quét 10 seed × mỗi 5 phút cho thấy
+    tỷ lệ khớp chính xác tập packer active / agv queued ≈ 97-99% (xem docs/phase4_design.md mục 5).
+    """
+    print("\nas_of  | packer_active ours/truth | agv_queued ours/truth | lệch tập")
+    for hhmm in CHECK_TIMES:
+        t = at(hhmm)
+        ours, real = state_sets(state_at(raw, t)[2]), truth_stage_sets(truth, t)
+        diff = sum(len(ours[k] ^ real[k]) for k in [("packer", "active"), ("agv", "queued")])
+        print(f"{hhmm}  | {len(ours[('packer', 'active')])}/{len(real[('packer', 'active')])}"
+              f"                      | {len(ours[('agv', 'queued')])}/{len(real[('agv', 'queued')])}"
+              f"                   | {diff}")
+        for k in [("packer", "active"), ("agv", "queued")]:
+            assert abs(len(ours[k]) - len(real[k])) <= 1, (hhmm, k)
+
+
+def test_state_queue_order_and_wip_rules(raw):
+    clean, j, st = state_at(raw, at("10:00"))
+    wip, _ = infer_wip(clean, j, at("10:00"), DL_CFG)
+    entered = dict(zip(wip["request_id"], wip["entered_min"]))
+    for stage in ("amr", "packer", "agv"):
+        ids = [q["request"]["request_id"] for q in st["queued_jobs"] if q["stage"] == stage]
+        keys = [(entered[i], i) for i in ids]
+        assert keys == sorted(keys), stage
+    for job in st["queued_jobs"] + st["active_jobs"]:
+        assert job["request"]["arrival_min"] == 0
+        assert job["request"]["origin_id"] == "STORE-1"
+    assert all(a["remaining_min"] >= DL_CFG["min_remaining_min"] for a in st["active_jobs"])
+
+
+def _truncate_csvs(src, dst, t):
+    """Tự cắt CSV: xóa mọi dòng sau as_of, xóa deliver_epoch sau as_of. KHÔNG copy _truth/."""
+    full = load_day(src, DL_CFG)
+    dst.mkdir(parents=True)
+    keep = {
+        "wms": full.wms["created_min"] <= t,
+        "amr": full.amr["ts_min"] <= t,
+        "agv": full.agv["load_min"] <= t,
+        "excel": full.excel["entered_min"] <= t,
+    }
+    for name in FEEDS + ("master",):
+        df = pd.read_csv(src / f"{name}.csv", dtype=str, keep_default_na=False)
+        if name in keep:
+            df = df[keep[name].to_numpy()].copy()
+        if name == "agv":
+            late = (full.agv.loc[keep["agv"], "deliver_min"] > t).to_numpy()
+            df.loc[late, "deliver_epoch"] = ""
+        df.to_csv(dst / f"{name}.csv", index=False)
+
+
+@pytest.mark.parametrize("hhmm", ["07:30", "10:00", "14:10", "18:00"])
+def test_no_look_ahead(raw, day_dir, tmp_path, hhmm):
+    """State từ feed đầy đủ == state từ feed đã bị xóa mọi dòng sau as_of."""
+    t = at(hhmm)
+    cut_dir = tmp_path / DATE
+    _truncate_csvs(day_dir, cut_dir, t)
+    cut = load_day(cut_dir, DL_CFG)
+    c_full, j_full, st_full = state_at(raw, t)
+    c_cut, j_cut, st_cut = state_at(cut, t)
+    assert st_full == st_cut
+    assert build_diagnostics(c_full, j_full, t, DL_CFG) == build_diagnostics(c_cut, j_cut, t, DL_CFG)
+    pd.testing.assert_frame_equal(j_full, j_cut)
+
+
+def test_diagnostics(raw):
+    t = at("10:00")
+    clean, j, st = state_at(raw, t)
+    d = build_diagnostics(clean, j, t, DL_CFG)
+    n_packer_q = sum(1 for q in st["queued_jobs"] if q["stage"] == "packer")
+    assert d["amr_held_at_gate"]["count"] == n_packer_q      # thùng chờ ở cổng = AMR bị giữ
+    assert d["amr_returning"]["count"] >= 0
+    assert d["estimates"]["pack_source"] == "data"
+    assert d["estimated_jobs"]["count"] >= 0
+    json.dumps(d)
