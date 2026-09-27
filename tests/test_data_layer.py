@@ -109,3 +109,53 @@ def test_snapshot_end_of_day_is_everything(raw):
     s = snapshot(raw, 10_000.0)
     for name in FEEDS:
         pd.testing.assert_frame_equal(getattr(s, name), getattr(raw, name))
+
+
+# ======================================================== Bước 2: kiểm tra 3 tầng
+from src.data_layer.schemas import validate_feeds  # noqa: E402
+
+
+def test_clean_seed_has_empty_quarantine(raw):
+    clean, q = validate_feeds(raw)
+    assert q.empty, q.to_string()
+    for name in FEEDS:
+        assert len(getattr(clean, name)) == len(getattr(raw, name))
+
+
+def test_dirty_rows_are_quarantined_with_reason(raw):
+    wms, amr, agv = raw.wms.copy(), raw.amr.copy(), raw.agv.copy()
+    wms.loc[5, "line_code"] = "LINE_Z"
+    i_ret = amr.index[amr["event"] == "RETURNED"][3]
+    amr.loc[i_ret, "event"] = "FLY"
+    agv.loc[7, "label"] = "PK999999"
+    dirty = raw.with_feeds(wms=wms, amr=amr, agv=agv)
+
+    clean, q = validate_feeds(dirty)
+    got = {(r.feed, r.row_index): r.reason for r in q.itertuples()}
+    assert set(got) == {("wms", 5), ("amr", i_ret), ("agv", 7)}, q.to_string()
+    assert "line_code" in got[("wms", 5)]
+    assert "event" in got[("amr", i_ret)]
+    assert "label" in got[("agv", 7)] and "tầng 3" in got[("agv", 7)]
+    # các dòng khác vẫn giữ
+    assert len(clean.wms) == len(wms) - 1
+    assert len(clean.amr) == len(amr) - 1
+    assert len(clean.agv) == len(agv) - 1
+    assert len(clean.excel) == len(raw.excel)
+
+
+def test_tier1_catches_unreadable_values(raw):
+    wms, excel = raw.wms.copy(), raw.excel.copy()
+    wms.loc[2, "qty_packs"] = pd.NA            # ô "abc" sau khi ép kiểu thành NA
+    excel.loc[1, "start_min"] = float("nan")   # "25:99" không đọc được
+    _, q = validate_feeds(raw.with_feeds(wms=wms, excel=excel))
+    reasons = dict(zip(zip(q["feed"], q["row_index"]), q["reason"]))
+    assert "qty_packs" in reasons[("wms", 2)]
+    assert "start" in reasons[("excel", 1)]
+
+
+def test_orphan_amr_task_is_quarantined(raw):
+    amr = raw.amr.copy()
+    i = amr.index[amr["event"] == "ARRIVE_GATE"][0]
+    amr.loc[i, "task_id"] = "T-9999"
+    _, q = validate_feeds(raw.with_feeds(amr=amr))
+    assert list(q["row_index"]) == [i] and "DISPATCH" in q["reason"].iloc[0]
