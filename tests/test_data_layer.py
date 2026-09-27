@@ -455,3 +455,29 @@ def test_pipeline_stops_on_contract_error(day_dir, tmp_path, monkeypatch):
     with pytest.raises(ContractError, match="busy"):
         _run_pipeline(day_dir, tmp_path / "bad")
     assert not (tmp_path / "bad").exists()     # không ghi gì khi state sai
+
+
+# ======================================================== Script tự kiểm tra trong docs/examples
+import subprocess  # noqa: E402
+
+
+@pytest.mark.parametrize("args", [
+    ["trace_request.py", "--request", "PICK-00050", "--as-of", "08:15"],
+    ["compare_truth.py", "--as-of", "10:00"],
+])
+def test_docs_examples_run(day_dir, args):
+    """Các script hướng dẫn trong docs/data_layer.md phải chạy được (tài liệu không bị cũ)."""
+    cmd = [sys.executable, str(ROOT / "docs" / "examples" / args[0]), *args[1:],
+           "--raw-dir", str(day_dir.parent), "--date", DATE]
+    out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+    assert out.returncode == 0, out.stderr
+    if args[0] == "compare_truth.py":
+        assert "Khớp chính xác 6/6" in out.stdout
+
+
+def test_docs_check_state_file(day_dir, tmp_path):
+    run(DATE, ["10:00"], raw_dir=day_dir.parent, out_dir=tmp_path, config_path=ROOT / "config" / "data_layer.yaml")
+    f = tmp_path / DATE / "gold" / "state_1000.json"
+    out = subprocess.run([sys.executable, str(ROOT / "docs" / "examples" / "check_state_file.py"), str(f)],
+                         capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+    assert out.returncode == 0 and "HỢP LỆ" in out.stdout, out.stdout + out.stderr
