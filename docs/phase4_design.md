@@ -109,7 +109,25 @@ Số dòng đọc vào và số dòng bị cách ly theo từng feed; tỷ lệ 
 | Output qua `validate_contracts.check_bundle` | Đúng contract |
 | Chạy hai lần cho cùng kết quả | Tái lập |
 
-Các con số sai số này nên đưa lên trang Validation, dưới dạng: *"Tầng dữ liệu tái dựng đúng X% trạng thái nhà máy dù Excel trễ 2 giờ và thiếu 5% dòng."*
+### Kết quả đo được (ngày 10, `tests/test_data_layer.py` + quét 10 seed)
+
+**Ghép ID (seed 42, cuối ngày):** AMR→WMS 430/430 (100%), AGV→WMS 428/428 (100%), Excel→WMS 406/406 (100%). Mọi mốc `amr_dispatch, arrive_gate, packer_start, agv_load, delivered` lệch truth < 1 giây (do feed cắt xuống giây); `packer_finish` từ Excel khớp truth ở mức phút. Độ phủ Excel (lượt đã lên AGV có log) ≈ 95-96%.
+
+**State so với truth:** quét seed 40–49, mỗi 5 phút từ 06:05 tới 21:55 (1.910 snapshot), 0 lỗi contract.
+
+| Ô của state | Khớp chính xác tập request_id | Sai số số lượng trung bình |
+| --- | --- | --- |
+| amr queued / amr active | 100% / 100% | 0 |
+| packer queued | 100% | 0 |
+| packer active (phải ước lượng) | 98,5% | 0,013 lượt |
+| agv queued (phải ước lượng) | 98,5% | 0,013 lượt |
+| agv active | 100% | 0 |
+
+Seed 42 tại 08:00, 10:00, 14:00, 18:00: khớp chính xác cả 6 ô. Test assert: AMR, packer queued, agv active khớp chính xác; packer active / agv queued lệch ≤ 1 lượt.
+
+**Không nhìn tương lai:** state, diagnostics và journey dựng từ feed đầy đủ **giống hệt** khi dựng từ CSV đã bị xóa mọi dòng sau `as_of` (07:30, 10:00, 14:10, 18:00). **Tái lập:** chạy pipeline 2 lần cho file silver/gold giống nhau từng byte.
+
+Các con số sai số này nên đưa lên trang Validation, dưới dạng: *"Tầng dữ liệu tái dựng đúng X% trạng thái nhà máy dù Excel trễ 2 giờ và thiếu 5% dòng."* Với số đo trên: *"đúng 100% hàng đợi AMR/packer và AGV đang chạy, 98,5% trạng thái đóng gói, dù Excel trễ 2 giờ và thiếu 5% dòng."*
 
 ## 6. Lịch 3 ngày
 

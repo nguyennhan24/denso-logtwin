@@ -317,7 +317,7 @@ def test_state_packer_agv_error_table(raw, truth):
     """Bảng sai số packer/agv (phần phải ước lượng vì Excel trễ). In ra để theo dõi.
 
     Ngưỡng: lệch số lượng ≤ 1 ở mỗi ô tại 4 mốc. Quét 10 seed × mỗi 5 phút cho thấy
-    tỷ lệ khớp chính xác tập packer active / agv queued ≈ 97-99% (xem docs/phase4_design.md mục 5).
+    tỷ lệ khớp chính xác tập packer active / agv queued = 98,5% (xem docs/phase4_design.md mục 5).
     """
     print("\nas_of  | packer_active ours/truth | agv_queued ours/truth | lệch tập")
     for hhmm in CHECK_TIMES:
@@ -389,3 +389,69 @@ def test_diagnostics(raw):
     assert d["estimates"]["pack_source"] == "data"
     assert d["estimated_jobs"]["count"] >= 0
     json.dumps(d)
+
+
+# ======================================================== Bước 5: quality + pipeline
+from contracts.validate_contracts import check_bundle  # noqa: E402
+from src.data_layer.pipeline import ContractError, run  # noqa: E402
+from src.data_layer.quality import dq_report  # noqa: E402
+
+
+def test_dq_report(raw):
+    t = at("10:00")
+    snap = snapshot(raw, t)
+    wms = snap.wms.copy()
+    wms.loc[wms.index[0], "line_code"] = "LINE_Z"
+    snap = snap.with_feeds(wms=wms)
+    clean, q = validate_feeds(snap)
+    j = build_journey(clean, t)
+    rep = dq_report(snap, clean, q, j, t, DL_CFG)
+    assert rep["rows"]["wms"]["quarantined"] == 1
+    keys = {m["key"] for m in rep["metrics"]}
+    assert {"rows_in", "match_amr", "match_agv", "match_excel", "excel_coverage",
+            "estimated_jobs", "lag_excel"} <= keys
+    assert all(m["label"] for m in rep["metrics"])
+    assert rep["match"]["amr"]["rate"] < 1.0          # task của phiếu WMS bị cách ly không ghép được
+    assert 0.9 <= rep["excel_coverage"]["coverage"] <= 1.0
+    assert rep["quarantine_reasons"][0]["count"] == 1
+    json.dumps(rep, ensure_ascii=False)
+
+
+def _run_pipeline(day_dir, out):
+    return run(DATE, ["08:00", "10:00", "14:30"], raw_dir=day_dir.parent, out_dir=out,
+               config_path=ROOT / "config" / "data_layer.yaml")
+
+
+def test_pipeline_end_to_end(day_dir, tmp_path):
+    s = _run_pipeline(day_dir, tmp_path / "u1")
+    gold = tmp_path / "u1" / DATE / "gold"
+    silver = tmp_path / "u1" / DATE / "silver"
+    for tag in ("0800", "1000", "1430"):
+        st = json.loads((gold / f"state_{tag}.json").read_text(encoding="utf-8"))
+        assert check_bundle({"current_state": st, "demand": []}) == []
+        assert (gold / f"dq_{tag}.json").exists() and (gold / f"diag_{tag}.json").exists()
+    j = pd.read_parquet(gold / "journey.parquet")
+    assert list(j.columns) == JOURNEY_COLS and (j["created_min"] <= at("14:30")).all()
+    for f in FEEDS + ("master", "quarantine"):
+        assert (silver / f"{f}.parquet").exists(), f
+    assert [r["as_of"][11:16] for r in s["as_of"]] == ["08:00", "10:00", "14:30"]
+
+    # Chạy 2 lần -> kết quả giống hệt từng byte
+    _run_pipeline(day_dir, tmp_path / "u2")
+    for p in sorted((tmp_path / "u1" / DATE).rglob("*.*")):
+        q = tmp_path / "u2" / DATE / p.relative_to(tmp_path / "u1" / DATE)
+        assert p.read_bytes() == q.read_bytes(), p.name
+
+
+def test_pipeline_stops_on_contract_error(day_dir, tmp_path, monkeypatch):
+    import src.data_layer.pipeline as pl
+
+    def broken(*a, **k):
+        st = build_state(*a, **k)
+        st["resources"]["amr"]["busy"] += 1      # cố ý làm sai quy tắc busy = số active job
+        return st
+
+    monkeypatch.setattr(pl, "build_state", broken)
+    with pytest.raises(ContractError, match="busy"):
+        _run_pipeline(day_dir, tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()     # không ghi gì khi state sai
