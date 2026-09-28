@@ -20,5 +20,3 @@ Kiến trúc: DATA → STATE → TWIN → KPI → DECISION.
 
 ## Tài liệu
 - `docs/feeds.md`: schema 6 feed + chuỗi ghép ID.
-- `src/data_layer/` (Phase 4, `docs/phase4_design.md`): 6 feed → quarantine → journey → `CurrentLogisticsState` + báo cáo chất lượng; chạy `python -m src.data_layer --date <ngày> --as-of HH:MM`, ghi `data/unified/<ngày>/{silver,gold}/`.
-- `docs/data_layer.md`: hướng dẫn dùng + tự kiểm tra Data Layer; script mẫu trong `docs/examples/`.
