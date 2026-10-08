@@ -1,0 +1,99 @@
+# ===== Scenario & Decision Engine config (Cường) =====
+# Dùng chung với scenarios.py và ranking.py.
+# Không hardcode capacity tuyệt đối — chỉ ghi delta so với baseline.
+
+# --- Thời gian phục vụ mặc định (phút) ---
+# Dùng cho baseline khi không có dữ liệu đo thực tế.
+# Lấy từ contract v0.1 example.
+default_service_min:
+  amr: 5.0
+  packer: 4.0
+  agv: 3.0
+
+# --- Horizon mô phỏng ---
+default_horizon_min: 60.0       # 1 giờ mặc định
+default_sample_every_min: 5.0   # mẫu timeline mỗi 5 phút
+
+# --- Scenario WHAT-IF ---
+# Mỗi scenario ghi delta capacity và factor service_min (nhân vào baseline).
+# scenarios.py đọc file này để sinh list ScenarioConfig.
+scenarios:
+  - scenario_id: "+1AMR"
+    capacity_delta: {amr: 1, packer: 0, agv: 0}
+
+  - scenario_id: "+2AMR"
+    capacity_delta: {amr: 2, packer: 0, agv: 0}
+
+  - scenario_id: "+1WORKER"
+    capacity_delta: {amr: 0, packer: 1, agv: 0}
+
+  - scenario_id: "+2WORKER"
+    capacity_delta: {amr: 0, packer: 2, agv: 0}
+
+  - scenario_id: "+1AGV"
+    capacity_delta: {amr: 0, packer: 0, agv: 1}
+
+  - scenario_id: "+2AGV"
+    capacity_delta: {amr: 0, packer: 0, agv: 2}
+
+  - scenario_id: "+2AMR+1WORKER"
+    capacity_delta: {amr: 2, packer: 1, agv: 0}
+
+  - scenario_id: "+1AMR+1AGV"
+    capacity_delta: {amr: 1, packer: 0, agv: 1}
+
+  - scenario_id: "+1ALL"
+    capacity_delta: {amr: 1, packer: 1, agv: 1}
+
+  - scenario_id: "FAST_PACK"
+    capacity_delta: {amr: 0, packer: 0, agv: 0}
+    service_min_factor: {amr: 1.0, packer: 0.75, agv: 1.0}
+
+# --- Trọng số KPI cho ranking ---
+# Tổng không cần = 1.0, ranking.py sẽ tự chuẩn hóa.
+# UI WHAT-IF có thể cho user chỉnh runtime → chỉ gọi lại rank(), không chạy lại sim.
+ranking_weights:
+  throughput_count: 0.30
+  avg_lead_time_min: 0.25
+  avg_total_wait_min: 0.20
+  unfinished_count: 0.15
+  peak_queue_max: 0.10             # max(peak_queue[amr], peak_queue[packer], peak_queue[agv])
+
+# --- Ngưỡng bottleneck detection ---
+bottleneck:
+  utilization_stressed: 0.80       # stage bắt đầu "stressed"
+  utilization_critical: 0.95       # stage nguy hiểm
+  peak_queue_notable: 3            # peak queue đáng chú ý
+  peak_queue_severe: 8             # peak queue nghiêm trọng
+  secondary_gap: 0.10              # khoảng cách util tối đa để tính secondary bottleneck
+
+# --- Ngưỡng KPI cảnh báo (dùng trong UI và explanation) ---
+kpi_thresholds:
+  avg_lead_time_min:
+    caution: 20.0                  # > 20 phút → vàng
+    warning: 30.0                  # > 30 phút → đỏ
+  avg_total_wait_min:
+    caution: 10.0
+    warning: 15.0
+  unfinished_count:
+    caution: 1                     # > 0 → chú ý
+    warning: 5                     # > 5 → nghiêm trọng
+  peak_queue_max:
+    caution: 5
+    warning: 10
+
+# --- Forecast config ---
+forecast:
+  default_horizon_hours: 4         # dự báo trước 4 giờ
+  spike_window_min: 30.0           # cửa sổ phát hiện spike (phút)
+  spike_threshold_sigma: 2.0       # spike nếu count > mean + 2*std
+  spike_critical_sigma: 3.0        # critical nếu count > mean + 3*std
+
+# --- Exception severity (NOW dashboard) ---
+exception_severity:
+  normal_utilization_max: 0.70
+  normal_queue_max: 3
+  warning_utilization_min: 0.70
+  warning_queue_min: 4
+  critical_utilization_min: 0.90
+  critical_queue_min: 8
