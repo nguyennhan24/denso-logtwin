@@ -73,28 +73,45 @@ st.markdown("""
 # ==========================================
 # MOCK DATA & CONTRACTS
 # ==========================================
-@st.cache_data
-def load_mock_current_state():
-    return {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "active_amrs": 8,
-        "busy_amrs": 6,
-        "offline_amrs": 1,
-        "active_workers": 3,
-        "queue_length_packs": 12,
-        "avg_wait_time_min": 4.5,
-        "throughput_rate": 45,
-        "lines_data": {
-            "Toàn nhà máy (Overview)": {"queue": 12, "wait": 4.5, "throughput": 45, "status": "Ổn định, có ùn ứ nhẹ tại Line C"},
-            "Line A (Hệ thống lái)": {"queue": 3, "wait": 2.1, "throughput": 15, "status": "Vận hành bình thường"},
-            "Line B (Động cơ điện)": {"queue": 2, "wait": 1.8, "throughput": 18, "status": "Vận hành trơn tru"},
-            "Line C (Linh kiện phanh)": {"queue": 7, "wait": 6.2, "throughput": 12, "status": "Cảnh báo: Đang ùn ứ thùng chứa"}
-        },
-        "exceptions": [
-            {"id": "EX-001", "line": "Line A (Hệ thống lái)", "type": "AMR Battery Low", "severity": "Medium", "time": "14:15"},
-            {"id": "EX-002", "line": "Line C (Linh kiện phanh)", "type": "Queue Overflow (>15 packs)", "severity": "High", "time": "14:22"},
-        ]
-    }
+ROOT = Path(__file__).resolve().parents[1]
+GOLD_DIR = ROOT / "data" / "gold" / "latest"
+
+def load_now_data():
+    """Mỗi lần rerun đọc lại gold, không cache hoặc fallback mock."""
+    from contracts.validate_contracts import check_bundle
+
+    with (GOLD_DIR / "state.json").open(encoding="utf-8") as stream:
+        doc = json.load(stream)
+
+    if doc.get("contract_version") != "0.1":
+        raise ValueError("NOW chỉ hỗ trợ contract v0.1")
+
+    if not isinstance(doc.get("current_state"), dict):
+        raise ValueError("Gold thiếu current_state")
+
+    errors = check_bundle(doc)
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    current_state = doc["current_state"]
+
+    with (GOLD_DIR / "data_quality.json").open(
+        encoding="utf-8"
+    ) as stream:
+        quality = json.load(stream)
+
+    if quality["as_of"] != current_state["as_of"]:
+        raise ValueError(
+            "State và quality khác snapshot; "
+            "hãy làm mới sau khi Data Layer chạy xong"
+        )
+
+    with (ROOT / "config" / "scenarios.yaml").open(
+        encoding="utf-8"
+    ) as stream:
+        thresholds = yaml.safe_load(stream)["exception_severity"]
+
+    return current_state, quality, thresholds
 
 @st.cache_data
 def load_mock_simulation_timeline():
@@ -107,15 +124,27 @@ def load_mock_simulation_timeline():
     ])
 
 @st.cache_data
-def load_validation_backtest_data():
-    # Dữ liệu so sánh Thực tế vs Dự báo để vẽ chart
-    np.random.seed(42)
-    hours = [f"{h:02d}:00" for h in range(8, 18)]
-    actual = np.random.randint(35, 65, size=len(hours))
-    predicted = actual + np.random.randint(-4, 5, size=len(hours))
-    return pd.DataFrame({"Khung giờ": hours, "Thực tế (Actual)": actual, "Mô phỏng (Predicted)": predicted}).set_index("Khung giờ")
+def load_validation_report():
+    path = ROOT / "data" / "results" / "phase8_validation.json"
 
-state = load_mock_current_state()
+    with path.open(encoding="utf-8") as stream:
+        report = json.load(stream)
+
+    if report.get("report_version") != "0.1":
+        raise ValueError("Report Phase 8 không đúng version")
+
+    if not {"DEFAULT", "CALIBRATED"} <= set(
+        report.get("models", {})
+    ):
+        raise ValueError("Report thiếu kết quả DEFAULT/CALIBRATED")
+
+    return report
+
+try:
+    state, quality, thresholds = load_now_data()
+except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
+    st.error(f"Không đọc được dữ liệu gold: {error}")
+    st.stop()
 
 # ==========================================
 # SIDEBAR NAVIGATION
@@ -125,91 +154,216 @@ st.sidebar.markdown("<p style='color: #9CA3AF; font-size: 0.8rem;'>Digital Twin 
 st.sidebar.markdown("---")
 
 if "menu_selection" not in st.session_state:
-    st.session_state["menu_selection"] = "🔴 NOW (Control Room)"
+    st.session_state["menu_selection"] = " NOW (Control Room)"
 
 st.sidebar.markdown("**ĐIỀU HƯỚNG HỆ THỐNG**")
 
-if st.sidebar.button("🔴  NOW — Real-time State", use_container_width=True):
-    st.session_state["menu_selection"] = "🔴 NOW (Control Room)"
+if st.sidebar.button("  NOW — Real-time State", use_container_width=True):
+    st.session_state["menu_selection"] = " NOW (Control Room)"
 
-if st.sidebar.button("🔮  NEXT — Risk Timeline", use_container_width=True):
-    st.session_state["menu_selection"] = "🔮 NEXT (Risk Timeline)"
+if st.sidebar.button(" NEXT — Risk Timeline", use_container_width=True):
+    st.session_state["menu_selection"] = "NEXT (Risk Timeline)"
 
-if st.sidebar.button("⚡  WHAT-IF — Scenario Lab", use_container_width=True):
-    st.session_state["menu_selection"] = "⚡ WHAT-IF (Scenario Lab)"
+if st.sidebar.button("  WHAT-IF — Scenario Lab", use_container_width=True):
+    st.session_state["menu_selection"] = " WHAT-IF (Scenario Lab)"
 
-if st.sidebar.button("📊  Validation & Trust", use_container_width=True):
-    st.session_state["menu_selection"] = "📊 Validation & Trust"
+if st.sidebar.button("  Validation & Trust", use_container_width=True):
+    st.session_state["menu_selection"] = " Validation & Trust"
 
 menu = st.session_state["menu_selection"]
 
 st.sidebar.markdown("---")
-st.sidebar.success("🟢 **System Status:** Online\n\n⚡ **Engine:** Synchronized")
+st.sidebar.caption(f"Snapshot dữ liệu: {state['as_of']}")
 
 # ==========================================
 # MAIN CONTENT
 # ==========================================
 
-if menu == "🔴 NOW (Control Room)":
-    st.markdown("# 🔴 NOW — Trạng thái Vận hành Thời gian thực")
-    st.markdown("Giám sát trực quan luồng vật lý machine-to-people và các điểm nghẽn tức thời trong nhà máy.")
-    st.markdown("---")
-    
-    col_filter1, col_filter2 = st.columns([1, 3])
-    with col_filter1:
-        selected_line = st.selectbox(
-            "📍 Lọc theo Line Sản xuất / Trạm:",
-            options=list(state["lines_data"].keys())
-        )
-    
-    current_line_info = state["lines_data"][selected_line]
-    st.markdown(f"<p style='color: #3B82F6; font-weight: 600;'>Đang hiển thị dữ liệu cho: {selected_line}</p>", unsafe_allow_html=True)
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("AMR Hoạt động", f"{state['busy_amrs']}/{state['active_amrs']}", delta="-1 offline", delta_color="inverse")
-    col2.metric("Nhân sự bốc Pack", f"{state['active_workers']} người")
-    col3.metric("Độ dài hàng đợi", f"{current_line_info['queue']} thùng", delta="+3 định mức" if selected_line != "Line B (Động cơ điện)" else "0 định mức", delta_color="inverse")
-    col4.metric("Thời gian chờ TB", f"{current_line_info['wait']} phút")
-    col5.metric("Throughput Line", f"{current_line_info['throughput']} packs/h")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
-        st.markdown(f"### 🗺️ Sơ đồ Luồng Vật lý Kho vận — {selected_line}")
-        st.info(f"💡 **Trạng thái trạm:** {current_line_info['status']}")
-        
-        chart_data = pd.DataFrame(
-            np.random.randn(20, 2) / [50, 50] + [21.0285, 105.8542],
-            columns=['lat', 'lon']
-        )
-        st.map(chart_data, zoom=14)
+if menu == " NOW (Control Room)":
+    st.markdown("#  NOW — Trạng thái tại snapshot")
+    st.caption(f"Snapshot: {state['as_of']}")
 
-    with col_right:
-        st.markdown("### ⚠️ Cảnh báo & Bất thường")
-        filtered_exceptions = [
-            ex for ex in state["exceptions"] 
-            if selected_line == "Toàn nhà máy (Overview)" or selected_line.split(" ")[0] in ex["line"]
-        ]
-        
-        if filtered_exceptions:
-            for ex in filtered_exceptions:
-                border_color = "#EF4444" if ex["severity"] == "High" else "#F59E0B"
-                st.markdown(f"""
-                    <div style="background-color: #111827; border-left: 4px solid {border_color}; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
-                        <b style="color: #F3F4F6;">{ex['line']}</b> — <span style="color: {border_color};">{ex['type']}</span><br>
-                        <small style="color: #9CA3AF;">Thời gian: {ex['time']} | Mức độ: {ex['severity']}</small>
-                    </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.success("✅ Không có cảnh báo bất thường nào tại khu vực này.")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 Làm mới Trạng thái Dữ liệu"):
-            st.rerun()
+    if st.button("Làm mới dữ liệu gold"):
+        st.rerun()
 
-elif menu == "🔮 NEXT (Risk Timeline)":
-    st.markdown("# 🔮 NEXT — Dự báo Năng lực & Timeline Rủi ro")
+    queued = state["queued_jobs"]
+    active = state["active_jobs"]
+    all_jobs = queued + active
+
+    lines = sorted({
+        job["request"]["destination_line_id"]
+        for job in all_jobs
+    })
+
+    selected_line = st.selectbox(
+        "Lọc đơn theo line",
+        ["Toàn nhà máy", *lines],
+    )
+
+    def belongs(job):
+        return (
+            selected_line == "Toàn nhà máy"
+            or job["request"]["destination_line_id"] == selected_line
+        )
+
+    selected_queued = [job for job in queued if belongs(job)]
+    selected_active = [job for job in active if belongs(job)]
+
+    amr_counts = (
+        state.get("resource_counts", {}).get("amr", {})
+    )
+
+    cols = st.columns(5)
+    cols[0].metric(
+        "Đơn mở",
+        len(selected_queued) + len(selected_active),
+    )
+    cols[1].metric("Đơn đang chờ", len(selected_queued))
+    cols[2].metric("Đơn đang phục vụ", len(selected_active))
+    cols[3].metric(
+        "AMR rảnh toàn nhà máy",
+        amr_counts.get("idle", "—"),
+    )
+    cols[4].metric(
+        "AMR giữ tại cổng",
+        amr_counts.get("blocked", "—"),
+    )
+
+    st.markdown("### Kho → AMR → Packer → AGV → Line")
+
+    for column, stage in zip(
+        st.columns(3), ("amr", "packer", "agv")
+    ):
+        column.metric(
+            f"{stage.upper()} — đang chờ",
+            sum(job["stage"] == stage for job in selected_queued),
+        )
+        column.metric(
+            f"{stage.upper()} — đang phục vụ",
+            sum(job["stage"] == stage for job in selected_active),
+        )
+
+    resources = state["resources"]
+
+    ratios = {
+        stage: (
+            resource["busy"]
+            / (resource["total"] - resource["offline"])
+            if resource["total"] > resource["offline"]
+            else 0.0
+        )
+        for stage, resource in resources.items()
+    }
+
+    total_queue = len(queued)
+    max_ratio = max(ratios.values())
+    has_offline = any(
+        resource["offline"] > 0
+        for resource in resources.values()
+    )
+
+    st.markdown("### Nguồn lực và cảnh báo toàn nhà máy")
+    st.caption(
+        "Nguồn lực dùng chung toàn nhà máy; "
+        "bộ lọc line chỉ lọc đơn."
+    )
+
+    if (
+        has_offline
+        or max_ratio >= thresholds["critical_utilization_min"]
+        or total_queue > thresholds["critical_queue_min"]
+    ):
+        st.error(
+            "CRITICAL — nguồn lực offline, "
+            "mức bận hoặc hàng đợi vượt ngưỡng."
+        )
+    elif (
+        max_ratio >= thresholds["warning_utilization_min"]
+        or total_queue >= thresholds["warning_queue_min"]
+    ):
+        st.warning(
+            "WARNING — mức bận hoặc hàng đợi "
+            "đạt ngưỡng cảnh báo."
+        )
+    else:
+        st.success(
+            "NORMAL — mức bận và hàng đợi trong ngưỡng."
+        )
+
+    st.dataframe(pd.DataFrame([
+        {
+            "Khâu": stage.upper(),
+            "Tổng": resource["total"],
+            "Offline": resource["offline"],
+            "Job đang phục vụ": resource["busy"],
+            "Tỷ lệ bận": ratios[stage],
+        }
+        for stage, resource in resources.items()
+    ]))
+
+    rows = []
+
+    for status, jobs in (
+        ("Đang chờ", selected_queued),
+        ("Đang phục vụ", selected_active),
+    ):
+        for job in jobs:
+            request = job["request"]
+            note = ""
+
+            if job.get("completion_unconfirmed"):
+                note = "Có thể đã xong, chờ Excel"
+            elif job.get("overdue"):
+                note = "Quá thời gian ước lượng"
+
+            rows.append({
+                "Đơn": request["request_id"],
+                "Line": request["destination_line_id"],
+                "Khâu": job["stage"].upper(),
+                "Trạng thái": status,
+                "Còn lại ước lượng (phút)": job.get(
+                    "est_remaining_min"
+                ),
+                "Ghi chú": note,
+            })
+
+    st.markdown("### Các đơn đang mở")
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows))
+    else:
+        st.info("Không có đơn mở trong phạm vi đã chọn.")
+
+    st.markdown("### Độ tươi và chất lượng dữ liệu")
+
+    st.dataframe(pd.DataFrame([
+        {
+            "Nguồn": name,
+            "Loại": info["source_type"],
+            "Cập nhật cuối": info["last_update"],
+            "Tuổi dữ liệu (phút)": info["age_min"],
+            "Trạng thái": "STALE" if info["stale"] else "FRESH",
+        }
+        for name, info in state["source_freshness"].items()
+    ]))
+
+    cols = st.columns(3)
+    cols[0].metric("Dòng cách ly", quality["quarantine_total"])
+
+    link_rate = quality["link_rate"]["overall"]["rate"]
+    estimate_ratio = quality["estimated"]["open_orders_estimate_ratio"]
+
+    cols[1].metric(
+        "Tỷ lệ nối ID",
+        f"{link_rate:.0%}" if link_rate is not None else "—",
+    )
+    cols[2].metric(
+        "Đơn có ước lượng",
+        f"{estimate_ratio:.0%}" if estimate_ratio is not None else "—",
+    )
+
+elif menu == "NEXT (Risk Timeline)":
+    st.markdown("# NEXT — Dự báo Năng lực & Timeline Rủi ro")
     st.markdown("Phân tích trước các xung đột giữa kế hoạch sản xuất tương lai và công suất nguồn lực. Chạy bằng **Forecast Engine (Code của Cường)**.")
     st.markdown("---")
     
@@ -259,8 +413,8 @@ elif menu == "🔮 NEXT (Risk Timeline)":
             </div>
         """, unsafe_allow_html=True)
 
-elif menu == "⚡ WHAT-IF (Scenario Lab)":
-    st.markdown("# ⚡ WHAT-IF — Mô phỏng Kịch bản & Tùy chỉnh Động")
+elif menu == " WHAT-IF (Scenario Lab)":
+    st.markdown("#  WHAT-IF — Mô phỏng Kịch bản & Tùy chỉnh Động")
     st.markdown("Hệ thống **Decision Engine (Code của Cường)** sẽ chấm điểm tự động và xếp hạng các kịch bản!")
     st.markdown("---")
     
@@ -321,78 +475,149 @@ elif menu == "⚡ WHAT-IF (Scenario Lab)":
             c4.metric("Unfinished", f"{fake_results[r.scenario_id]['metrics']['unfinished_count']}", f"{r.kpi_deltas.get('unfinished_count', 0):+.0f}", delta_color="inverse")
             st.markdown("<br>", unsafe_allow_html=True)
 
-elif menu == "📊 Validation & Trust":
-    st.markdown("# 📊 Validation & Trust — Kiểm định Độ tin cậy Mô hình")
-    st.markdown("Minh bạch hóa cơ sở dữ liệu, sai số backtest và biểu đồ so sánh thực tế để đảm bảo độ tin cậy tuyệt đối.")
-    st.markdown("---")
-    
-    # Biểu đồ so sánh trực quan Actual vs. Predicted (Tính năng mới)
-    st.markdown("### 📉 Biểu đồ So sánh Thực tế (Actual) vs. Mô phỏng (Predicted)")
-    st.markdown("*Đồ thị minh họa mức độ bám sát của mô hình Discrete-Event Simulation so với sản lượng thực tế trong ca.*")
-    
-    backtest_df = load_validation_backtest_data()
-    st.line_chart(backtest_df)
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    col_v1, col_v2 = st.columns(2)
-    with col_v1:
-        st.markdown("### 📈 Chỉ số Sai số Lịch sử (Backtest Metrics)")
-        metrics_df = pd.DataFrame([
-            {"Chỉ số đánh giá": "Throughput Error", "Sai số (MAPE)": "4.2%", "Trạng thái": "Đạt chuẩn (< 5%)"},
-            {"Chỉ số đánh giá": "Average Wait Time Error", "Sai số (MAPE)": "6.8%", "Trạng thái": "Đạt chuẩn (< 10%)"},
-            {"Chỉ số đánh giá": "Bottleneck Agreement Rate", "Tỷ lệ khớp": "91.5%", "Trạng thái": "Đạt chuẩn (> 90%)"}
-        ])
-        st.table(metrics_df)
-        
-    with col_v2:
-        st.markdown("### 📝 Cơ sở Khoa học & Vận hành")
-        st.markdown("""
-        * **Calibrated Real-world Data:** Tham số tốc độ AMR và thời gian thao tác bốc pack được hiệu chuẩn trực tiếp từ lịch sử vận hành thực tế.
-        * **Discrete-Event Simulation (DES):** Mô phỏng chính xác cơ chế hàng đợi tại từng nút thắt cổ chai thay vì ước lượng tuyến tính đơn giản.
-        * **High Validation Accuracy:** Tỷ lệ dự báo chính xác điểm nghẽn đạt trên 91% trong các bài kiểm tra tải cao giả lập.
-        """)
+elif menu == " Validation & Trust":
+    st.markdown("#  Validation & Trust")
+
+    try:
+        report = load_validation_report()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        st.error(f"Không đọc được báo cáo Phase 8: {error}")
+        st.stop()
+
+    st.caption(
+        "Backtest với demand thực tế của Generator; "
+        "tham số được hiệu chỉnh trên các ngày train riêng."
+    )
+
+    name = st.selectbox(
+        "Bộ tham số",
+        ["CALIBRATED", "DEFAULT"],
+    )
+    model = report["models"][name]
+
+    rate = model["bottleneck_agreement_pct"]
+    st.metric(
+        "Bottleneck agreement theo ngày",
+        f"{rate:.1f}%",
+    )
+
+    if model["gate"]["passed"]:
+        st.success(
+            "Đạt mục tiêu agreement ≥80% "
+            "trên ít nhất 5 ngày test."
+        )
+    else:
+        st.warning(
+            "Chưa đạt mục tiêu bottleneck agreement."
+        )
+
+    st.subheader("Sai số theo cửa sổ")
+
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "KPI": key,
+                "MAE": value["mae"],
+                "MAPE (%)": value["mape_pct"],
+                "Mẫu MAE": value["valid_count"],
+                "Mẫu MAPE": value["percentage_count"],
+                "Tổng cửa sổ": value["total_count"],
+            }
+            for key, value in model["summary"].items()
+        ]),
+        use_container_width=True,
+    )
+
+    st.subheader("Trước và sau hiệu chỉnh")
+    st.caption(
+        "mae_delta < 0 nghĩa là sai số giảm; "
+        "> 0 nghĩa là tăng."
+    )
+    st.dataframe(
+        pd.DataFrame(report["comparison"]),
+        use_container_width=True,
+    )
+
+    st.subheader("Bottleneck từng ngày")
+    st.table(pd.DataFrame([
+        {
+            "Ngày": day["date"],
+            "Seed": day["seed"],
+            "Actual": day["actual_primary"] or "Không nghẽn",
+            "Predicted": (
+                day["predicted_primary"] or "Không nghẽn"
+            ),
+            "Khớp": day["match"],
+        }
+        for day in model["days"]
+    ]))
+
+    day = st.selectbox(
+        "Ngày xem biểu đồ",
+        [item["date"] for item in model["days"]],
+    )
+    windows = [
+        item for item in model["windows"]
+        if item["date"] == day
+    ]
+
+    st.subheader("Throughput trong từng cửa sổ")
+    st.line_chart(
+        pd.DataFrame([
+            {
+                "Thời điểm": pd.Timestamp(item["as_of"]),
+                "Actual": (
+                    item["actual_metrics"]["throughput_count"]
+                ),
+                "Predicted": (
+                    item["predicted_metrics"]["throughput_count"]
+                ),
+            }
+            for item in windows
+        ]).set_index("Thời điểm")
+    )
+
+    at = st.selectbox(
+        "Snapshot xem queue",
+        [item["as_of"] for item in windows],
+    )
+    window = next(
+        item for item in windows
+        if item["as_of"] == at
+    )
+    stage = st.selectbox(
+        "Stage",
+        ["amr", "packer", "agv"],
+    )
+
+    st.line_chart(
+        pd.DataFrame({
+            "Phút từ snapshot": [
+                point["time_min"]
+                for point in window["actual_timeline"]
+            ],
+            "Actual": [
+                point["queue"][stage]
+                for point in window["actual_timeline"]
+            ],
+            "Predicted": [
+                point["queue"][stage]
+                for point in window["predicted_timeline"]
+            ],
+        }).set_index("Phút từ snapshot")
+    )
+
+    st.subheader("Kết luận từ kết quả")
+    st.write(model["narrative"])
+
+    with st.expander("Phạm vi và giới hạn đánh giá"):
+        for limitation in report["limitations"]:
+            st.write(f"• {limitation}")
 
         # ==========================================
 # CONTRACT ADAPTER LAYER (Cầu nối dữ liệu thật)
 # ==========================================
-DATA_DIR = Path("data/unified")
 RESULTS_DIR = Path("data/results")
-
-def load_current_logistics_state():
-    """
-    Đọc CurrentLogisticsState contract từ Data Layer của Trung.
-    Nếu file thật chưa tồn tại, dùng mock data dự phòng.
-    """
-    state_file = DATA_DIR / "current_state.json"
-    if state_file.exists():
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    
-    # Fallback Mock nếu chưa có contract thật
-    return {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "active_amrs": 8,
-        "busy_amrs": 6,
-        "offline_amrs": 1,
-        "active_workers": 3,
-        "queue_length_packs": 12,
-        "avg_wait_time_min": 4.5,
-        "throughput_rate": 45,
-        "lines_data": {
-            "Toàn nhà máy (Overview)": {"queue": 12, "wait": 4.5, "throughput": 45, "status": "Ổn định, có ùn ứ nhẹ tại Line C"},
-            "Line A (Hệ thống lái)": {"queue": 3, "wait": 2.1, "throughput": 15, "status": "Vận hành bình thường"},
-            "Line B (Động cơ điện)": {"queue": 2, "wait": 1.8, "throughput": 18, "status": "Vận hành trơn tru"},
-            "Line C (Linh kiện phanh)": {"queue": 7, "wait": 6.2, "throughput": 12, "status": "Cảnh báo: Đang ùn ứ thùng chứa"}
-        },
-        "exceptions": [
-            {"id": "EX-001", "line": "Line A (Hệ thống lái)", "type": "AMR Battery Low", "severity": "Medium", "time": "14:15"},
-            {"id": "EX-002", "line": "Line C (Linh kiện phanh)", "type": "Queue Overflow (>15 packs)", "severity": "High", "time": "14:22"},
-        ]
-    }
 
 def load_simulation_result_timeline():
     """

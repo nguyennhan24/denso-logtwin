@@ -1,7 +1,7 @@
 import simpy
-from resources import make_resources
-from process import material_flow
-from entities import (
+from .resources import make_resources
+from .process import material_flow
+from .entities import (
     ActiveJob,
     CurrentLogisticsState,
     MaterialRequest,
@@ -10,11 +10,11 @@ from entities import (
     QueuedJob,
     SimulationResult,
 )
-from metrics import analyze_events
+from .metrics import analyze_events
 from copy import deepcopy
 
 STAGES = ("amr", "packer", "agv")
-from metrics import count_completion
+from .metrics import count_completion
 
 def validate_inputs(config, demand, initial_state):
     # Kiểm tra những điều kiện liên quan đến cả một lần mô phỏng.

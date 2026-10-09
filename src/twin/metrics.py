@@ -128,6 +128,10 @@ def build_timeline(config, events, initial_state=None):
             ),
         })
 
+    for point in timeline:
+        point["queue"] = point["queue_length"]
+        point["completed_count"] = point["delivered_count"]
+
     return timeline
 
 def calculate_wait_times(config, events, initial_state=None):
@@ -135,6 +139,7 @@ def calculate_wait_times(config, events, initial_state=None):
     initial_active = set()
 
     wait_by_request = {}
+    wait_by_request_stage = {}
     wait_by_stage = {stage: [] for stage in STAGES}
     delivered_ids = set()
 
@@ -183,6 +188,10 @@ def calculate_wait_times(config, events, initial_state=None):
                 wait_by_request[request_id] = (
                     wait_by_request.get(request_id, 0.0) + wait
                 )
+                stage_waits = wait_by_request_stage.setdefault(
+                    request_id, {stage: 0.0 for stage in STAGES}
+                )
+                stage_waits[stage] += wait
 
         elif stage == "line" and event_name == "delivered":
             delivered_ids.add(request_id)
@@ -216,9 +225,22 @@ def calculate_wait_times(config, events, initial_state=None):
     }
 
     return {
-        "avg_wait_min": avg_wait_min,
+        "avg_total_wait_min": avg_wait_min,
         "avg_wait_by_stage_min": avg_wait_by_stage_min,
         "open_queue_wait_min": open_queue_wait_min,
+
+        # Bottleneck: chỉ tính đóng góp chờ của các đơn đã giao.
+        # Các stage chưa đi qua kể từ snapshot có đóng góp bằng 0.
+        "avg_wait_contribution_by_stage_min": {
+            stage: (
+                sum(
+                    wait_by_request_stage.get(rid, {}).get(stage, 0.0)
+                    for rid in delivered_ids
+                ) / len(delivered_ids)
+                if delivered_ids else None
+            )
+            for stage in STAGES
+        },
     }
 
 def calculate_resource_metrics(config, events, initial_state=None):
@@ -318,7 +340,7 @@ def calculate_resource_metrics(config, events, initial_state=None):
             stage: queue_area[stage] / config.horizon_min
             for stage in STAGES
         },
-        "peak_queue_length": peak_queue,
+        "peak_queue": peak_queue,
         "queue_length_end": {
             stage: len(queued[stage])
             for stage in STAGES
@@ -329,13 +351,45 @@ def calculate_resource_metrics(config, events, initial_state=None):
         },
     }
 
+def calculate_lead_times(demand, initial_state, events):
+    """Lead time của đơn đã giao; WIP tính từ snapshot."""
+    arrivals = {
+        request.request_id: request.arrival_min
+        for request in demand
+    }
+
+    if initial_state is not None:
+        for job in (
+            *initial_state.active_jobs,
+            *initial_state.queued_jobs,
+        ):
+            arrivals[job.request.request_id] = 0.0
+
+    delivered = {}
+    for event in events:
+        if event["stage"] == "line" and event["event"] == "delivered":
+            # Một request chỉ được tính hoàn thành một lần.
+            delivered.setdefault(
+                event["request_id"], event["time_min"]
+            )
+
+    return {
+        "avg_lead_time_min": (
+            sum(
+                time - arrivals[rid]
+                for rid, time in delivered.items()
+            ) / len(delivered)
+            if delivered else None
+        )
+    }
+
 def analyze_events(config, demand, initial_state, events):
     """Gom các KPI và timeline, trả về (metrics, timeline)."""
 
     # Chỉ tính event trong horizon, kể cả đúng tại horizon.
     horizon_events = [
         event for event in events
-        if event["time_min"] <= config.horizon_min
+        if 0 <= event["time_min"] <= config.horizon_min
     ]
 
     # 1. Đếm số request hoàn thành và chưa hoàn thành.
@@ -349,7 +403,12 @@ def analyze_events(config, demand, initial_state, events):
             config, horizon_events, initial_state
         )
     )
-
+    metrics.update(
+        calculate_lead_times(
+            demand, initial_state, horizon_events
+        )
+    )
+    
     # 3. Bổ sung utilization và các chỉ số queue.
     metrics.update(
         calculate_resource_metrics(
@@ -357,9 +416,96 @@ def analyze_events(config, demand, initial_state, events):
         )
     )
 
+    metrics["bottleneck"] = detect_bottleneck(metrics)
+
     # 4. Dựng trạng thái tại từng mốc lấy mẫu.
     timeline = build_timeline(
         config, horizon_events, initial_state
     )
 
     return metrics, timeline
+
+def detect_bottleneck(metrics, thresholds=None):
+    """Một logic bottleneck dùng chung cho Twin và Decision."""
+    if thresholds is None:
+        from pathlib import Path
+        import yaml
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "scenarios.yaml"
+        )
+        with path.open(encoding="utf-8") as stream:
+            thresholds = yaml.safe_load(stream)["bottleneck"]
+
+    utils = metrics["utilization"]
+    queues = metrics["peak_queue"]
+
+    contributions = metrics.get(
+        "avg_wait_contribution_by_stage_min", {}
+    )
+    waits = {
+        stage: contributions.get(stage)
+        for stage in STAGES
+    }
+
+    stressed = sorted(
+        (
+            stage for stage in STAGES
+            if utils[stage] >= thresholds["utilization_stressed"]
+        ),
+        key=lambda stage: utils[stage],
+        reverse=True,
+    )
+
+    primary = stressed[0] if stressed else None
+    secondary = None
+    parts = []
+
+    if primary is None:
+        parts.append(
+            "Không có stage vượt ngưỡng utilization bottleneck."
+        )
+    else:
+        parts.append(
+            f"{primary.upper()} là bottleneck chính: "
+            f"utilization {utils[primary]:.0%}, "
+            f"peak queue {queues[primary]}."
+        )
+
+        if waits[primary] is not None:
+            parts.append(
+                "Đóng góp thời gian chờ trung bình: "
+                f"{waits[primary]:.2f} phút/đơn đã giao."
+            )
+
+        if (
+            len(stressed) > 1
+            and utils[primary] - utils[stressed[1]]
+            <= thresholds["secondary_gap"]
+        ):
+            secondary = stressed[1]
+            parts.append(
+                f"{secondary.upper()} là bottleneck phụ."
+            )
+
+        for stage in STAGES:
+            if (
+                stage != primary
+                and queues[stage] > queues[primary]
+                and queues[stage] >= thresholds["peak_queue_severe"]
+            ):
+                parts.append(
+                    f"Peak queue tại {stage.upper()} "
+                    "gợi ý ùn tắc cục bộ."
+                )
+
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "utilizations": utils,
+        "peak_queues": queues,
+        "wait_per_stage": waits,
+        "explanation": " ".join(parts),
+    }

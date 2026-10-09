@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python — chọn module để chạy",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "${input:moduleName}",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "console": "integratedTerminal"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "moduleName",
+            "type": "promptString",
+            "description": "Nhập module muốn chạy",
+            "default": "src.twin.simulation"
+        }
+    ]
+}

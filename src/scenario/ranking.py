@@ -7,7 +7,7 @@ class BottleneckResult:
     secondary: str | None
     utilizations: dict[str, float]
     peak_queues: dict[str, int]
-    wait_per_stage: dict[str, float]
+    wait_per_stage: dict[str, float | None]
     explanation: str
 
 @dataclass
@@ -21,48 +21,17 @@ class RankedScenario:
     bottleneck: BottleneckResult
     explanation: str
 
-def detect_bottleneck(metrics: dict[str, Any], events: list[dict[str, Any]] | None = None) -> BottleneckResult:
-    """Phát hiện bottleneck từ metrics và events."""
-    utils = metrics.get("utilization", {"amr": 0.0, "packer": 0.0, "agv": 0.0})
-    queues = metrics.get("peak_queue", {"amr": 0, "packer": 0, "agv": 0})
-    
-    # Wait contribution logic (simplified for v0.1 without full events parsing if not provided)
-    wait_per_stage = {"amr": 0.0, "packer": 0.0, "agv": 0.0}
-    
-    stressed_stages = [st for st, u in utils.items() if u >= 0.80]
-    
-    primary = None
-    secondary = None
-    explanation_parts = []
-    
-    if stressed_stages:
-        # Sort by utilization descending
-        stressed_stages.sort(key=lambda st: utils[st], reverse=True)
-        primary = stressed_stages[0]
-        
-        explanation_parts.append(f"{primary.upper()} là bottleneck chính (utilization {utils[primary]:.0%}, peak queue {queues[primary]}).")
-        
-        if len(stressed_stages) > 1:
-            if utils[primary] - utils[stressed_stages[1]] <= 0.10:
-                secondary = stressed_stages[1]
-                explanation_parts.append(f"{secondary.upper()} là bottleneck phụ (utilization {utils[secondary]:.0%}).")
-                
-    else:
-        explanation_parts.append("Không có bottleneck rõ ràng — hệ thống cân bằng (tất cả utilization < 80%).")
-        
-    # Cross-check with peak queue
-    for st in ("amr", "packer", "agv"):
-        if st != primary and queues[st] > 5:
-            if primary and queues[st] > queues[primary]:
-                explanation_parts.append(f"Cảnh báo: Peak queue của {st.upper()} ({queues[st]}) cao hơn {primary.upper()}, gợi ý ùn tắc cục bộ.")
+def detect_bottleneck(
+    metrics: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+) -> BottleneckResult:
+    """Decision dùng detector của Twin."""
+    from src.twin.metrics import (
+        detect_bottleneck as twin_detect_bottleneck,
+    )
 
     return BottleneckResult(
-        primary=primary,
-        secondary=secondary,
-        utilizations=utils,
-        peak_queues=queues,
-        wait_per_stage=wait_per_stage,
-        explanation=" ".join(explanation_parts)
+        **twin_detect_bottleneck(metrics)
     )
 
 def generate_explanation(ranked: RankedScenario, baseline_bn: str | None) -> str:

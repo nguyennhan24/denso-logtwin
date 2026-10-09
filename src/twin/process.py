@@ -1,6 +1,6 @@
 import simpy
-from resources import make_resources
-from entities import MaterialRequest, ScenarioConfig, SimulationResult
+from .resources import make_resources
+from .entities import MaterialRequest, ScenarioConfig, SimulationResult
 STAGE = ("amr", "packer", "agv")
 def material_flow(env, material_request, pools, config, events, start_stage='amr', remaining_min=None):
     if start_stage not in STAGE:
