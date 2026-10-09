@@ -4,7 +4,14 @@ import numpy as np
 from datetime import datetime
 import json
 import os
+import sys
 from pathlib import Path
+
+# Nối đường dẫn để import code thư mục mẹ (src)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.scenario.ranking import rank
+from src.demand.forecast import forecast_demand, detect_spikes, build_risk_timeline
+import yaml
 
 # ==========================================
 # CẤU HÌNH GIAO DIỆN & CUSTOM CSS HIỆN ĐẠI
@@ -203,21 +210,34 @@ if menu == "🔴 NOW (Control Room)":
 
 elif menu == "🔮 NEXT (Risk Timeline)":
     st.markdown("# 🔮 NEXT — Dự báo Năng lực & Timeline Rủi ro")
-    st.markdown("Phân tích trước các xung đột giữa kế hoạch sản xuất tương lai và công suất nguồn lực.")
+    st.markdown("Phân tích trước các xung đột giữa kế hoạch sản xuất tương lai và công suất nguồn lực. Chạy bằng **Forecast Engine (Code của Cường)**.")
     st.markdown("---")
     
-    timeline_df = load_mock_simulation_timeline()
+    # 1. Đọc dữ liệu mô phỏng Production Plan
+    plan_df = pd.DataFrame([
+        {"hour_idx": 0, "line_id": "Line A", "product": "P100", "planned_qty": 450},
+        {"hour_idx": 1, "line_id": "Line B", "product": "P200", "planned_qty": 650},
+    ])
+    bom_mock = {
+        "P100": {"bom_packs_per_unit": {"M01": 0.2}},
+        "P200": {"bom_packs_per_unit": {"M04": 0.3}}
+    }
     
-    st.markdown("### 📈 Biểu đồ Xu hướng Hàng đợi Dự báo")
-    st.line_chart(timeline_df.set_index("time")["queue_length"], color="#3B82F6")
+    # 2. Chạy logic Cường
+    future_reqs = forecast_demand(plan_df, bom_mock, horizon_hours=2)
+    spikes = detect_spikes(future_reqs, window_min=30.0, spike_threshold=1.0)
+    # Lấy state từ code hiện tại của Hải Anh để đồng bộ logic
+    timeline_c = build_risk_timeline(future_reqs, spikes, state, interval_min=30.0)
     
+    # 3. Hiển thị UI
     st.markdown("### ⏱️ Timeline Mốc thời gian & Trạng thái Rủi ro")
     
-    for index, row in timeline_df.iterrows():
-        risk = row["risk_level"]
-        if risk == "High":
+    for row in timeline_c:
+        risk = row["risk_level"].capitalize()
+        if risk == "High" or risk == "Critical":
             border_c = "#EF4444"
             bg_c = "rgba(239, 68, 68, 0.1)"
+            risk = "High"
         elif risk == "Medium":
             border_c = "#F59E0B"
             bg_c = "rgba(245, 158, 11, 0.1)"
@@ -225,63 +245,81 @@ elif menu == "🔮 NEXT (Risk Timeline)":
             border_c = "#10B981"
             bg_c = "rgba(16, 185, 129, 0.1)"
             
+        time_label = f"Phút {row['time_min']} - {row['time_min'] + 30}"
+        
         st.markdown(f"""
             <div style="background-color: #111827; border: 1px solid #1F2937; border-left: 5px solid {border_c}; padding: 14px; border-radius: 8px; margin-bottom: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <b style="font-size: 1.1rem; color: #F3F4F6;">⏰ {row['time']}</b>
+                    <b style="font-size: 1.1rem; color: #F3F4F6;">⏰ {time_label}</b>
                     <span style="background-color: {bg_c}; color: {border_c}; padding: 3px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: bold;">Rủi ro: {risk}</span>
                 </div>
                 <hr style="border-color: #1F2937; margin: 8px 0;">
-                <p style="margin: 0; color: #9CA3AF;"><b>Độ dài hàng đợi dự kiến:</b> <span style="color: #F3F4F6;">{row['queue_length']} thùng</span></p>
-                <p style="margin: 4px 0 0 0; color: #9CA3AF;"><b>Trạng thái hệ thống:</b> <i style="color: #E5E7EB;">{row['status']}</i></p>
+                <p style="margin: 0; color: #9CA3AF;"><b>Số lượt yêu cầu vật tư (Requests):</b> <span style="color: #F3F4F6;">{row['expected_requests']} lượt</span></p>
+                <p style="margin: 4px 0 0 0; color: #9CA3AF;"><b>Đánh giá tự động:</b> <i style="color: #E5E7EB;">{row['note']}</i></p>
             </div>
         """, unsafe_allow_html=True)
 
 elif menu == "⚡ WHAT-IF (Scenario Lab)":
     st.markdown("# ⚡ WHAT-IF — Mô phỏng Kịch bản & Tùy chỉnh Động")
-    st.markdown("Điều chỉnh trực tiếp các thông số nguồn lực để chạy mô phỏng giả lập tác động thời gian thực.")
+    st.markdown("Hệ thống **Decision Engine (Code của Cường)** sẽ chấm điểm tự động và xếp hạng các kịch bản!")
     st.markdown("---")
     
-    col_ctrl, col_res = st.columns([1, 2])
+    # 1. Đọc trọng số từ config của Cường
+    with open("config/scenarios.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+        
+    st.markdown("### 🏆 Bảng Xếp hạng Kịch bản")
     
-    with col_ctrl:
-        st.markdown("### 🎛️ Thiết lập Giả định (Scenario Parameters)")
-        add_amrs = st.slider("Số lượng xe AMR mua thêm / điều động:", min_value=0, max_value=5, value=2, step=1)
-        add_workers = st.slider("Số nhân sự bốc pack bổ sung (Shift):", min_value=0, max_value=3, value=1, step=1)
-        demand_spike = st.selectbox("Biến động kế hoạch sản xuất:", ["Bình thường (100%)", "Tăng tải cao (+50%)", "Đột biến cao (+100%)"])
+    # 2. Giả lập kết quả trả về từ Twin (vì Nhân chưa code)
+    fake_results = {
+        "BASELINE": {
+            "metrics": {
+                "throughput_count": 45, "avg_lead_time_min": 25.0, "avg_total_wait_min": 15.0,
+                "unfinished_count": 12, "utilization": {"amr": 0.85, "packer": 0.5, "agv": 0.4},
+                "peak_queue": {"amr": 6, "packer": 1, "agv": 0}
+            }
+        },
+        "+2AMR (Đề xuất)": {
+            "metrics": {
+                "throughput_count": 55, "avg_lead_time_min": 17.0, "avg_total_wait_min": 8.0,
+                "unfinished_count": 2, "utilization": {"amr": 0.65, "packer": 0.65, "agv": 0.5},
+                "peak_queue": {"amr": 2, "packer": 3, "agv": 1}
+            }
+        },
+        "+2WORKER": {
+            "metrics": {
+                "throughput_count": 48, "avg_lead_time_min": 24.0, "avg_total_wait_min": 14.0,
+                "unfinished_count": 9, "utilization": {"amr": 0.88, "packer": 0.3, "agv": 0.45},
+                "peak_queue": {"amr": 7, "packer": 0, "agv": 0}
+            }
+        }
+    }
+    
+    # 3. CHẠY HÀM CỦA CƯỜNG
+    ranked = rank(fake_results, weights=cfg["ranking_weights"])
+    
+    # 4. Hiển thị UI
+    for r in ranked:
+        is_top = (r.rank == 1)
+        border = "2px solid #3B82F6" if is_top else "1px solid #1F2937"
         
-        run_sim = st.button("🚀 Chạy Mô phỏng What-If")
-
-    with col_res:
-        st.markdown("### 📊 Kết quả Phân tích Tác động Mô phỏng")
-        
-        base_throughput = 45
-        base_wait = 4.5
-        multiplier_amr = 1 + (add_amrs * 0.08)
-        multiplier_worker = 1 + (add_workers * 0.15)
-        spike_factor = 1.0 if demand_spike == "Bình thường (100%)" else (1.4 if demand_spike == "Tăng tải cao (+50%)" else 1.8)
-        
-        sim_throughput = int((base_throughput * multiplier_amr * multiplier_worker) / (spike_factor * 0.9))
-        sim_wait = round(max(0.5, base_wait / (multiplier_amr * multiplier_worker) * (spike_factor * 0.8)), 1)
-        
-        if sim_wait > 4.0:
-            bottleneck_status = "🔴 Cảnh báo: Nguy cơ ùn ứ tại trạm bốc pack"
-        elif sim_wait > 2.5:
-            bottleneck_status = "🟡 Lưu ý: Vận hành ổn định nhưng sát ngưỡng"
-        else:
-            bottleneck_status = "🟢 Tối ưu: Luồng hàng thông suốt, không nghẽn"
-
-        m1, m2 = st.columns(2)
-        m1.metric("Throughput Mô phỏng", f"{sim_throughput} packs/h", delta=f"{sim_throughput - base_throughput:+d} packs/h")
-        m2.metric("Thời gian Chờ Dự kiến", f"{sim_wait} phút", delta=f"{sim_wait - base_wait:+.1f} phút", delta_color="inverse")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.info(f"**Đánh giá trạng thái nút thắt:**  \n{bottleneck_status}")
-        
-        if add_workers > 0 and add_amrs == 0:
-            st.success("💡 **Nhận xét chuyên gia:** Việc bổ sung nhân sự bốc pack thủ công giải quyết triệt để nút thắt cổ chai tại trạm machine-to-people với chi phí tối ưu nhất.")
-        elif add_amrs > 0:
-            st.success("💡 **Nhận xét chuyên gia:** Tăng cường xe AMR giúp cải thiện tốc độ cấp linh kiện từ kho sâu ra cổng trung chuyển.")
+        with st.container():
+            st.markdown(f"""
+            <div style="background-color: #111827; border: {border}; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: {'#3B82F6' if is_top else '#F3F4F6'};">
+                    { "🏆 Hạng 1:" if is_top else f"Hạng {r.rank}:" } {r.scenario_id} (Điểm: {r.total_score:.2f})
+                </h3>
+                <p style="color: #9CA3AF; white-space: pre-wrap;">{r.explanation}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Hiển thị số liệu chênh lệch (Delta)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Throughput", f"{fake_results[r.scenario_id]['metrics']['throughput_count']} thùng", f"{r.kpi_deltas.get('throughput_count', 0):+.0f} thùng")
+            c2.metric("Lead Time", f"{fake_results[r.scenario_id]['metrics']['avg_lead_time_min']:.1f} m", f"{r.kpi_deltas.get('avg_lead_time_min', 0):+.1f} m", delta_color="inverse")
+            c3.metric("Wait Time", f"{fake_results[r.scenario_id]['metrics']['avg_total_wait_min']:.1f} m", f"{r.kpi_deltas.get('avg_total_wait_min', 0):+.1f} m", delta_color="inverse")
+            c4.metric("Unfinished", f"{fake_results[r.scenario_id]['metrics']['unfinished_count']}", f"{r.kpi_deltas.get('unfinished_count', 0):+.0f}", delta_color="inverse")
+            st.markdown("<br>", unsafe_allow_html=True)
 
 elif menu == "📊 Validation & Trust":
     st.markdown("# 📊 Validation & Trust — Kiểm định Độ tin cậy Mô hình")
