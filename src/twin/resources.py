@@ -1,5 +1,5 @@
 import simpy
-from entities import ScenarioConfig
+from .entities import ScenarioConfig
 
 
 def make_resources(env, config):

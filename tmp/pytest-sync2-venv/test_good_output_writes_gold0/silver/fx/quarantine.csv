@@ -1,0 +1,12 @@
+feed,row_ref,check,reason
+wms,wms.csv:4,ingest:exact_duplicate,duplicate_row
+excel,excel.csv:3,ingest:exact_duplicate,duplicate_row
+wms,wms.csv:9,required:created_at,missing_timestamp
+wms,wms.csv:7,range:qty_packs,out_of_range
+amr,amr.csv:18,required:ts,missing_timestamp
+amr,amr.csv:12,domain:event,invalid_event
+agv,agv.csv:2,range:deliver_minus_load,out_of_range
+production,production.csv:6,type:planned_qty,not_a_number
+production,production.csv:4,range:planned_qty,out_of_range
+excel,excel.csv:6,required:end,missing_timestamp
+excel,excel.csv:5,range:end_minus_start,out_of_range

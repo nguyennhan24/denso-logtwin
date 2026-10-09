@@ -1,0 +1,231 @@
+{
+  "contract_version": "0.1",
+  "current_state": {
+    "as_of": "2026-10-21T14:10:00+07:00",
+    "resources": {
+      "amr": {
+        "total": 6,
+        "busy": 1,
+        "offline": 1
+      },
+      "packer": {
+        "total": 3,
+        "busy": 0,
+        "offline": 1
+      },
+      "agv": {
+        "total": 4,
+        "busy": 1,
+        "offline": 0
+      }
+    },
+    "queued_jobs": [
+      {
+        "stage": "amr",
+        "request": {
+          "request_id": "PICK-00005",
+          "arrival_min": 0,
+          "origin_id": "STORE-1",
+          "destination_line_id": "L1",
+          "material_id": "M03",
+          "quantity": 6
+        },
+        "created_offset_min": -2.0
+      },
+      {
+        "stage": "packer",
+        "request": {
+          "request_id": "PICK-00009",
+          "arrival_min": 0,
+          "origin_id": "STORE-1",
+          "destination_line_id": "L1",
+          "material_id": "M03",
+          "quantity": 4
+        },
+        "created_offset_min": -70.0
+      },
+      {
+        "stage": "packer",
+        "request": {
+          "request_id": "PICK-00003",
+          "arrival_min": 0,
+          "origin_id": "STORE-1",
+          "destination_line_id": "L2",
+          "material_id": "M04",
+          "quantity": 5
+        },
+        "created_offset_min": -10.0
+      }
+    ],
+    "active_jobs": [
+      {
+        "stage": "amr",
+        "remaining_min": 1.0,
+        "request": {
+          "request_id": "PICK-00004",
+          "arrival_min": 0,
+          "origin_id": "STORE-1",
+          "destination_line_id": "L2",
+          "material_id": "M05",
+          "quantity": 2
+        },
+        "is_estimated": true,
+        "estimate_method": "chỉ có 4 lượt trước as_of (< 5) -> dùng mặc định config 4.00 phút, trừ thời gian đã chạy",
+        "overdue": false,
+        "est_remaining_min": 1.0,
+        "completion_unconfirmed": false,
+        "created_offset_min": -5.0
+      },
+      {
+        "stage": "agv",
+        "remaining_min": 1.0,
+        "request": {
+          "request_id": "PICK-00002",
+          "arrival_min": 0,
+          "origin_id": "STORE-1",
+          "destination_line_id": "L1",
+          "material_id": "M02",
+          "quantity": 4
+        },
+        "is_estimated": true,
+        "estimate_method": "chỉ có 1 lượt trước as_of (< 5) -> dùng mặc định config 3.00 phút, trừ thời gian đã chạy",
+        "overdue": false,
+        "est_remaining_min": 1.0,
+        "completion_unconfirmed": false,
+        "created_offset_min": -15.0
+      }
+    ],
+    "feed_updated_at": {
+      "wms": "2026-10-21T14:08:00+07:00",
+      "amr": "2026-10-21T14:07:30+07:00",
+      "agv": "2026-10-21T14:08:00+07:00",
+      "production": "2026-10-21T13:00:00+07:00",
+      "labor": "2026-10-21T06:00:00+07:00",
+      "excel": "2026-10-21T14:00:00+07:00"
+    },
+    "open_request_count": 5,
+    "resource_counts": {
+      "amr": {
+        "total": 6,
+        "busy": 1,
+        "blocked": 2,
+        "idle": 2,
+        "offline": 1
+      },
+      "packer": {
+        "total": 3,
+        "busy": 0,
+        "idle": 2,
+        "offline": 1
+      },
+      "agv": {
+        "total": 4,
+        "busy": 1,
+        "idle": 3,
+        "offline": 0
+      }
+    },
+    "resource_detail": {
+      "amr": {
+        "busy": [
+          "AMR-02"
+        ],
+        "blocked": [
+          "AMR-01",
+          "AMR-04"
+        ],
+        "idle": [
+          "AMR-03",
+          "AMR-06"
+        ],
+        "offline": [
+          "AMR-05"
+        ],
+        "blocked_jobs": [
+          {
+            "amr_id": "AMR-01",
+            "request_id": "PICK-00009"
+          },
+          {
+            "amr_id": "AMR-04",
+            "request_id": "PICK-00003"
+          }
+        ]
+      },
+      "agv": {
+        "busy": [
+          "AGV-02"
+        ],
+        "idle": [
+          "AGV-01",
+          "AGV-03",
+          "AGV-04"
+        ],
+        "offline": []
+      },
+      "packer": {
+        "slots": [
+          "PK-1",
+          "PK-2",
+          "PK-3"
+        ],
+        "workers_on_shift": [
+          "W04",
+          "W05",
+          "W06"
+        ],
+        "workers_on_break": [
+          "W05"
+        ],
+        "workers_available": [
+          "W04",
+          "W06"
+        ]
+      }
+    },
+    "source_freshness": {
+      "wms": {
+        "source_type": "batch",
+        "last_update": "2026-10-21T14:08:00+07:00",
+        "age_min": 2.0,
+        "stale_after_min": 15,
+        "stale": false
+      },
+      "amr": {
+        "source_type": "stream",
+        "last_update": "2026-10-21T14:07:30+07:00",
+        "age_min": 2.5,
+        "stale_after_min": 5,
+        "stale": false
+      },
+      "agv": {
+        "source_type": "stream",
+        "last_update": "2026-10-21T14:08:00+07:00",
+        "age_min": 2.0,
+        "stale_after_min": 15,
+        "stale": false
+      },
+      "production": {
+        "source_type": "batch",
+        "last_update": "2026-10-21T13:00:00+07:00",
+        "age_min": 70.0,
+        "stale_after_min": 1440,
+        "stale": false
+      },
+      "labor": {
+        "source_type": "batch",
+        "last_update": "2026-10-21T06:00:00+07:00",
+        "age_min": 490.0,
+        "stale_after_min": 1440,
+        "stale": false
+      },
+      "excel": {
+        "source_type": "manual",
+        "last_update": "2026-10-21T14:00:00+07:00",
+        "age_min": 10.0,
+        "stale_after_min": 150,
+        "stale": false
+      }
+    }
+  }
+}

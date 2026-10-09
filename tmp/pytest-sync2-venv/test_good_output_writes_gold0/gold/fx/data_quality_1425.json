@@ -1,0 +1,132 @@
+{
+  "as_of": "2026-10-21T14:25:00+07:00",
+  "feed_rows": {
+    "wms": {
+      "raw_rows": 10,
+      "future_rows_cut": 0,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 1,
+      "rows_at_as_of": 9,
+      "quarantined_rows": 3,
+      "clean_rows_after_validate": 7
+    },
+    "amr": {
+      "raw_rows": 19,
+      "future_rows_cut": 2,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 0,
+      "rows_at_as_of": 17,
+      "quarantined_rows": 3,
+      "clean_rows_after_validate": 15
+    },
+    "agv": {
+      "raw_rows": 5,
+      "future_rows_cut": 0,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 0,
+      "rows_at_as_of": 5,
+      "quarantined_rows": 2,
+      "clean_rows_after_validate": 4
+    },
+    "production": {
+      "raw_rows": 5,
+      "future_rows_cut": 0,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 0,
+      "rows_at_as_of": 5,
+      "quarantined_rows": 2,
+      "clean_rows_after_validate": 3
+    },
+    "labor": {
+      "raw_rows": 6,
+      "future_rows_cut": 0,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 0,
+      "rows_at_as_of": 6,
+      "quarantined_rows": 0,
+      "clean_rows_after_validate": 6
+    },
+    "excel": {
+      "raw_rows": 6,
+      "future_rows_cut": 1,
+      "future_cells_masked": 0,
+      "duplicates_dropped": 1,
+      "rows_at_as_of": 4,
+      "quarantined_rows": 4,
+      "clean_rows_after_validate": 2
+    }
+  },
+  "quarantine_total": 14,
+  "quarantine_by_reason": {
+    "out_of_range": 4,
+    "missing_timestamp": 3,
+    "duplicate_row": 2,
+    "invalid_event": 1,
+    "not_a_number": 1,
+    "task_not_in_wms": 1,
+    "label_not_in_wms": 1,
+    "pick_not_in_wms": 1
+  },
+  "quarantine_by_feed_reason": {
+    "agv:label_not_in_wms": 1,
+    "agv:out_of_range": 1,
+    "amr:invalid_event": 1,
+    "amr:missing_timestamp": 1,
+    "amr:task_not_in_wms": 1,
+    "excel:duplicate_row": 1,
+    "excel:missing_timestamp": 1,
+    "excel:out_of_range": 1,
+    "excel:pick_not_in_wms": 1,
+    "production:not_a_number": 1,
+    "production:out_of_range": 1,
+    "wms:duplicate_row": 1,
+    "wms:missing_timestamp": 1,
+    "wms:out_of_range": 1
+  },
+  "link_rate": {
+    "amr": {
+      "rows": 14,
+      "linked": 13,
+      "rate": 0.9286
+    },
+    "agv": {
+      "rows": 4,
+      "linked": 3,
+      "rate": 0.75
+    },
+    "excel": {
+      "rows": 2,
+      "linked": 1,
+      "rate": 0.5
+    },
+    "overall": {
+      "rows": 20,
+      "linked": 17,
+      "rate": 0.85
+    },
+    "wms": {
+      "rows": 7,
+      "valid_requests": 7
+    }
+  },
+  "estimated": {
+    "estimated_fields": [
+      "current_state.active_jobs[].remaining_min",
+      "order_status.est_remaining_min",
+      "order_status.stage_entered_at (khi stage_is_estimated = true)"
+    ],
+    "open_orders": 5,
+    "open_orders_with_estimate": 2,
+    "open_orders_estimate_ratio": 0.4,
+    "stage_inferred_orders": 0,
+    "active_jobs": 2,
+    "active_jobs_estimated": 2
+  },
+  "overdue_orders": 1,
+  "late_orders": 1,
+  "stale_sources": [
+    "amr"
+  ],
+  "stale_source_count": 1,
+  "stale_orders": 1
+}
