@@ -1,9 +1,7 @@
 import simpy
-from copy import deepcopy
-
-from .resources import make_resources
-from .process import material_flow
-from .entities import (
+from resources import make_resources
+from process import material_flow
+from entities import (
     ActiveJob,
     CurrentLogisticsState,
     MaterialRequest,
@@ -12,15 +10,14 @@ from .entities import (
     QueuedJob,
     SimulationResult,
 )
-from .metrics import analyze_events, count_completion
+from metrics import analyze_events
+from copy import deepcopy
 
 STAGES = ("amr", "packer", "agv")
-
+from metrics import count_completion
 
 def validate_inputs(config, demand, initial_state):
     # Kiểm tra những điều kiện liên quan đến cả một lần mô phỏng.
-    # Config biến thể có thể được sửa sau khi dataclass đã khởi tạo.
-    config.__post_init__()
     if set(config.capacity) != set(STAGES):
         raise ValueError("Capacity must be amr, packer, agv")
 
@@ -30,7 +27,6 @@ def validate_inputs(config, demand, initial_state):
     seen_ids = set()
 
     for request in demand:
-        request.__post_init__()
         if not 0 <= request.arrival_min < config.horizon_min:
             raise ValueError(
                 f"{request.request_id}: arrival_min must be in "
@@ -103,17 +99,16 @@ def simulate_event(config, demand, initial_state=None):
     snapshot_queue_keys = set()
 
     if initial_state is not None:
-        for index, job in enumerate(initial_state.active_jobs):
+        for job in initial_state.active_jobs:
             env.process(
                 material_flow(
                     env, job.request, pools, config, events,
                     start_stage=job.stage,
                     remaining_min=job.remaining_min,
-                    initial_priority=(0, 0, index),
                 )
             )   
 
-        for index, job in enumerate(initial_state.queued_jobs):
+        for job in initial_state.queued_jobs:
             key = (job.request.request_id, job.stage)
             snapshot_queue_keys.add(key)
 
@@ -129,7 +124,6 @@ def simulate_event(config, demand, initial_state=None):
                 material_flow(
                     env, job.request, pools, config, events,
                     start_stage=job.stage,
-                    initial_priority=(0, 1, index),
                 )
             )
 
@@ -213,206 +207,83 @@ if __name__ == "__main__":
             and event["event"] == event_name
         ]
 
-    # as_of = "2026-10-01T10:00:00+07:00"
-    # feed_updated_at = {
-    #     name: as_of
-    #     for name in ("wms", "amr", "agv", "production", "labor", "excel")
-    # }
+    as_of = "2026-10-01T10:00:00+07:00"
+    feed_updated_at = {
+        name: as_of
+        for name in ("wms", "amr", "agv", "production", "labor", "excel")
+    }
 
-    # # CA 1: Không có initial_state
-    # config_1 = ScenarioConfig(
-    #     scenario_id="NO-WIP",
-    #     horizon_min=20,
-    #     sample_every_min=5,
-    #     random_seed=42,
-    #     capacity={"amr": 5, "packer": 3, "agv": 4},
-    #     service_min={"amr": 4.0, "packer": 5.5, "agv": 3.0},
-    # )
+    # CA 1: Không có initial_state
+    config_1 = ScenarioConfig(
+        scenario_id="NO-WIP",
+        horizon_min=20,
+        sample_every_min=5,
+        random_seed=42,
+        capacity={"amr": 5, "packer": 3, "agv": 4},
+        service_min={"amr": 4.0, "packer": 5.5, "agv": 3.0},
+    )
 
-    # events_1 = simulate_event(
-    #     config_1,
-    #     [make_request("NEW-1", arrival_min=1.5)],
-    # )
+    events_1 = simulate_event(
+        config_1,
+        [make_request("NEW-1", arrival_min=1.5)],
+    )
 
-    # assert event_times(events_1, "NEW-1", "amr", "arrival") == [1.5]
-    # assert event_times(events_1, "NEW-1", "line", "delivered") == [14.0]
-    # print("CA 1: PASS - demand không có WIP")
+    assert event_times(events_1, "NEW-1", "amr", "arrival") == [1.5]
+    assert event_times(events_1, "NEW-1", "line", "delivered") == [14.0]
+    print("CA 1: PASS - demand không có WIP")
 
-    # # CA 2: Một active AGV, một queued AGV
-    # config_2 = ScenarioConfig(
-    #     scenario_id="AGV-WIP",
-    #     horizon_min=20,
-    #     sample_every_min=5,
-    #     random_seed=42,
-    #     capacity={"amr": 5, "packer": 3, "agv": 1},
-    #     service_min={"amr": 4.0, "packer": 5.5, "agv": 3.0},
-    # )
+    # CA 2: Một active AGV, một queued AGV
+    config_2 = ScenarioConfig(
+        scenario_id="AGV-WIP",
+        horizon_min=20,
+        sample_every_min=5,
+        random_seed=42,
+        capacity={"amr": 5, "packer": 3, "agv": 1},
+        service_min={"amr": 4.0, "packer": 5.5, "agv": 3.0},
+    )
 
-    # state_2 = CurrentLogisticsState(
-    #     as_of=as_of,
-    #     resources={
-    #         "amr": ResourceStatus(total=5, busy=0, offline=0),
-    #         "packer": ResourceStatus(total=3, busy=0, offline=0),
-    #         "agv": ResourceStatus(total=1, busy=1, offline=0),
-    #     },
-    #     active_jobs=[
-    #         ActiveJob(
-    #             stage="agv",
-    #             remaining_min=2.0,
-    #             request=make_request("ACTIVE-AGV"),
-    #         )
-    #     ],
-    #     queued_jobs=[
-    #         QueuedJob(
-    #             stage="agv",
-    #             request=make_request("QUEUED-AGV"),
-    #         )
-    #     ],
-    #     feed_updated_at=feed_updated_at,
-    # )
+    state_2 = CurrentLogisticsState(
+        as_of=as_of,
+        resources={
+            "amr": ResourceStatus(total=5, busy=0, offline=0),
+            "packer": ResourceStatus(total=3, busy=0, offline=0),
+            "agv": ResourceStatus(total=1, busy=1, offline=0),
+        },
+        active_jobs=[
+            ActiveJob(
+                stage="agv",
+                remaining_min=2.0,
+                request=make_request("ACTIVE-AGV"),
+            )
+        ],
+        queued_jobs=[
+            QueuedJob(
+                stage="agv",
+                request=make_request("QUEUED-AGV"),
+            )
+        ],
+        feed_updated_at=feed_updated_at,
+    )
 
-    # events_2 = simulate_event(config_2, [], initial_state=state_2)
+    events_2 = simulate_event(config_2, [], initial_state=state_2)
 
-    # assert event_times(
-    #     events_2, "ACTIVE-AGV", "line", "delivered"
-    # ) == [2.0]
-    # assert event_times(
-    #     events_2, "QUEUED-AGV", "agv", "queued"
-    # ) == [0]
-    # assert event_times(
-    #     events_2, "QUEUED-AGV", "agv", "start"
-    # ) == [2.0]
-    # assert event_times(
-    #     events_2, "QUEUED-AGV", "line", "delivered"
-    # ) == [5.0]
-    # print("CA 2: PASS - active trước queued, queued chỉ ghi một lần")
+    assert event_times(
+        events_2, "ACTIVE-AGV", "line", "delivered"
+    ) == [2.0]
+    assert event_times(
+        events_2, "QUEUED-AGV", "agv", "queued"
+    ) == [0]
+    assert event_times(
+        events_2, "QUEUED-AGV", "agv", "start"
+    ) == [2.0]
+    assert event_times(
+        events_2, "QUEUED-AGV", "line", "delivered"
+    ) == [5.0]
+    print("CA 2: PASS - active trước queued, queued chỉ ghi một lần")
 
-    # # CA 3: WIP FIFO trước demand mới ở phút 0
-    # config_3 = ScenarioConfig(
-    #     scenario_id="FIFO-CHECK",
-    #     horizon_min=20,
-    #     sample_every_min=5,
-    #     random_seed=42,
-    #     capacity={"amr": 1, "packer": 1, "agv": 1},
-    #     service_min={"amr": 5.0, "packer": 4.0, "agv": 3.0},
-    # )
-
-    # state_3 = CurrentLogisticsState(
-    #     as_of=as_of,
-    #     resources={
-    #         "amr": ResourceStatus(total=1, busy=1, offline=0),
-    #         "packer": ResourceStatus(total=1, busy=0, offline=0),
-    #         "agv": ResourceStatus(total=1, busy=0, offline=0),
-    #     },
-    #     active_jobs=[
-    #         ActiveJob(
-    #             stage="amr",
-    #             remaining_min=3.0,
-    #             request=make_request("REQ-OLD-003"),
-    #         )
-    #     ],
-    #     queued_jobs=[
-    #         QueuedJob(
-    #             stage="amr",
-    #             request=make_request("REQ-OLD-002"),
-    #         ),
-    #         QueuedJob(
-    #             stage="amr",
-    #             request=make_request("REQ-OLD-001"),
-    #         ),
-    #     ],
-    #     feed_updated_at=feed_updated_at,
-    # )
-
-    # events_3 = simulate_event(
-    #     config_3,
-    #     [make_request("REQ-001", arrival_min=0)],
-    #     initial_state=state_3,
-    # )
-
-    # amr_starts = [
-    #     (event["request_id"], event["time_min"])
-    #     for event in events_3
-    #     if event["stage"] == "amr"
-    #     and event["event"] == "start"
-    #     and event["request_id"] in {
-    #         "REQ-OLD-002", "REQ-OLD-001", "REQ-001"
-    #     }
-    # ]
-
-    # assert amr_starts == [
-    #     ("REQ-OLD-002", 3.0),
-    #     ("REQ-OLD-001", 8.0),
-    #     ("REQ-001", 13.0),
-    # ], amr_starts
-
-    # print("CA 3: PASS - WIP FIFO trước demand phút 0")
-    # print("TẤT CẢ CA KIỂM TRA ĐỀU PASS")
-    
-    # assert count_completion(
-    #     [make_request("NEW-1", arrival_min=1.5)],
-    #     None,
-    #     events_1,
-    # ) == {
-    #     "throughput_count": 1,
-    #     "unfinished_count": 0,
-    # }
-
-    # assert count_completion(
-    #     [],
-    #     state_2,
-    #     events_2,
-    # ) == {
-    #     "throughput_count": 2,
-    #     "unfinished_count": 0,
-    # }
-
-    # assert count_completion(
-    #     [make_request("REQ-001", arrival_min=0)],
-    #     state_3,
-    #     events_3,
-    # ) == {
-    #     "throughput_count": 3,
-    #     "unfinished_count": 1,
-    # }
-
-    # print("COUNT COMPLETION: PASS")
-
-    # demand_3 = [
-    #     make_request("REQ-001", arrival_min=0)
-    # ]
-
-    # result = run(
-    #     config_3,
-    #     demand_3,
-    #     initial_state=state_3,
-    # )
-
-    # assert isinstance(result, SimulationResult)
-    # assert result.initial_state_used is True
-    # assert result.input_count == 1
-
-    # assert result.metrics["throughput_count"] == 3
-    # assert result.metrics["unfinished_count"] == 1
-
-    # assert result.timeline[0]["time_min"] == 0
-    # assert result.timeline[-1]["time_min"] == config_3.horizon_min
-
-    # assert result.timeline[-1]["delivered_count"] == 3
-    # assert result.timeline[-1]["unfinished_arrived_count"] == 1
-
-    # print("\nMETRICS:")
-    # for name, value in result.metrics.items():
-    #     print(name, ":", value)
-
-    # print("\nTIMELINE:")
-    # for snapshot in result.timeline:
-    #     print(snapshot)
-
-    # print("\nSIMULATION RESULT: PASS")
-
-    config = ScenarioConfig(
-        scenario_id="CHECK-PHASE2",
+    # CA 3: WIP FIFO trước demand mới ở phút 0
+    config_3 = ScenarioConfig(
+        scenario_id="FIFO-CHECK",
         horizon_min=20,
         sample_every_min=5,
         random_seed=42,
@@ -420,28 +291,116 @@ if __name__ == "__main__":
         service_min={"amr": 5.0, "packer": 4.0, "agv": 3.0},
     )
 
-    demand = [
-        MaterialRequest("A", 0, "STORE-1", "L1", "M01", 1),
-        MaterialRequest("B", 2, "STORE-1", "L1", "M01", 1),
+    state_3 = CurrentLogisticsState(
+        as_of=as_of,
+        resources={
+            "amr": ResourceStatus(total=1, busy=1, offline=0),
+            "packer": ResourceStatus(total=1, busy=0, offline=0),
+            "agv": ResourceStatus(total=1, busy=0, offline=0),
+        },
+        active_jobs=[
+            ActiveJob(
+                stage="amr",
+                remaining_min=3.0,
+                request=make_request("REQ-OLD-003"),
+            )
+        ],
+        queued_jobs=[
+            QueuedJob(
+                stage="amr",
+                request=make_request("REQ-OLD-002"),
+            ),
+            QueuedJob(
+                stage="amr",
+                request=make_request("REQ-OLD-001"),
+            ),
+        ],
+        feed_updated_at=feed_updated_at,
+    )
+
+    events_3 = simulate_event(
+        config_3,
+        [make_request("REQ-001", arrival_min=0)],
+        initial_state=state_3,
+    )
+
+    amr_starts = [
+        (event["request_id"], event["time_min"])
+        for event in events_3
+        if event["stage"] == "amr"
+        and event["event"] == "start"
+        and event["request_id"] in {
+            "REQ-OLD-002", "REQ-OLD-001", "REQ-001"
+        }
     ]
 
-    result = run(config, demand)
+    assert amr_starts == [
+        ("REQ-OLD-002", 3.0),
+        ("REQ-OLD-001", 8.0),
+        ("REQ-001", 13.0),
+    ], amr_starts
 
-    from math import isclose
+    print("CA 3: PASS - WIP FIFO trước demand phút 0")
+    print("TẤT CẢ CA KIỂM TRA ĐỀU PASS")
+    
+    assert count_completion(
+        [make_request("NEW-1", arrival_min=1.5)],
+        None,
+        events_1,
+    ) == {
+        "throughput_count": 1,
+        "unfinished_count": 0,
+    }
 
-    assert result.input_count == 2
-    assert result.metrics["throughput_count"] == 2
-    assert result.metrics["unfinished_count"] == 0
-    assert isclose(result.metrics["avg_total_wait_min"], 1.5)
+    assert count_completion(
+        [],
+        state_2,
+        events_2,
+    ) == {
+        "throughput_count": 2,
+        "unfinished_count": 0,
+    }
 
-    for stage, expected in {"amr": 0.5, "packer": 0.4, "agv": 0.3}.items():
-        assert isclose(result.metrics["utilization"][stage], expected)
+    assert count_completion(
+        [make_request("REQ-001", arrival_min=0)],
+        state_3,
+        events_3,
+    ) == {
+        "throughput_count": 3,
+        "unfinished_count": 1,
+    }
 
-    assert [s["time_min"] for s in result.timeline] == [0, 5, 10, 15, 20]
-    assert result.timeline[-1]["completed_count"] == 2
-    assert isclose(result.metrics["avg_lead_time_min"], 13.5)
-    assert result.metrics["peak_queue"] == {
-        "amr": 1, "packer": 0, "agv": 0
-}
-    print("CA A/B: PASS")
-    print("METRICS:", result.metrics)
+    print("COUNT COMPLETION: PASS")
+
+    demand_3 = [
+        make_request("REQ-001", arrival_min=0)
+    ]
+
+    result = run(
+        config_3,
+        demand_3,
+        initial_state=state_3,
+    )
+
+    assert isinstance(result, SimulationResult)
+    assert result.initial_state_used is True
+    assert result.input_count == 1
+
+    assert result.metrics["throughput_count"] == 3
+    assert result.metrics["unfinished_count"] == 1
+
+    assert result.timeline[0]["time_min"] == 0
+    assert result.timeline[-1]["time_min"] == config_3.horizon_min
+
+    assert result.timeline[-1]["delivered_count"] == 3
+    assert result.timeline[-1]["unfinished_arrived_count"] == 1
+
+    print("\nMETRICS:")
+    for name, value in result.metrics.items():
+        print(name, ":", value)
+
+    print("\nTIMELINE:")
+    for snapshot in result.timeline:
+        print(snapshot)
+
+    print("\nSIMULATION RESULT: PASS")

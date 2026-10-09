@@ -39,11 +39,6 @@ def sample_times(horizon_min, sample_every_min):
             "horizon_min và sample_every_min phải hữu hạn và > 0"
         )
 
-    if horizon % step != 0:
-        raise ValueError(
-            "sample_every_min phải chia hết horizon_min"
-        )
-
     times = []
     time = Decimal("0")
 
@@ -119,7 +114,7 @@ def build_timeline(config, events, initial_state=None):
 
         timeline.append({
             "time_min": time,
-            "queue": {
+            "queue_length": {
                 stage: len(queued[stage])
                 for stage in STAGES
             },
@@ -127,7 +122,7 @@ def build_timeline(config, events, initial_state=None):
                 stage: len(busy[stage])
                 for stage in STAGES
             },
-            "completed_count": len(delivered_ids),
+            "delivered_count": len(delivered_ids),
             "unfinished_arrived_count": len(
                 arrived_ids - delivered_ids
             ),
@@ -193,14 +188,14 @@ def calculate_wait_times(config, events, initial_state=None):
             delivered_ids.add(request_id)
 
     # Tổng chờ qua các stage, trung bình trên request đã giao.
-    avg_total_wait_min = None
+    avg_wait_min = None
 
     if delivered_ids:
         total_wait = sum(
             wait_by_request.get(request_id, 0.0)
             for request_id in delivered_ids
         )
-        avg_total_wait_min = total_wait / len(delivered_ids)
+        avg_wait_min = total_wait / len(delivered_ids)
 
     avg_wait_by_stage_min = {
         stage: (
@@ -221,7 +216,7 @@ def calculate_wait_times(config, events, initial_state=None):
     }
 
     return {
-        "avg_total_wait_min": avg_total_wait_min,
+        "avg_wait_min": avg_wait_min,
         "avg_wait_by_stage_min": avg_wait_by_stage_min,
         "open_queue_wait_min": open_queue_wait_min,
     }
@@ -323,7 +318,7 @@ def calculate_resource_metrics(config, events, initial_state=None):
             stage: queue_area[stage] / config.horizon_min
             for stage in STAGES
         },
-        "peak_queue": peak_queue,
+        "peak_queue_length": peak_queue,
         "queue_length_end": {
             stage: len(queued[stage])
             for stage in STAGES
@@ -332,43 +327,6 @@ def calculate_resource_metrics(config, events, initial_state=None):
             stage: len(busy[stage])
             for stage in STAGES
         },
-    }
-
-def calculate_lead_time(config, demand, initial_state, events):
-    """Tính lead time trung bình trên các request đã giao."""
-    arrival_by_id = {
-        request.request_id: request.arrival_min
-        for request in demand
-    }
-
-    # WIP được đo từ snapshot, tức phút 0.
-    if initial_state is not None:
-        for job in (*initial_state.active_jobs, *initial_state.queued_jobs):
-            arrival_by_id[job.request.request_id] = 0.0
-
-    delivered_by_id = {}
-
-    for event in events:
-        if (
-            0 <= event["time_min"] <= config.horizon_min
-            and event["stage"] == "line"
-            and event["event"] == "delivered"
-        ):
-            # Mỗi request chỉ tính một lần.
-            delivered_by_id.setdefault(
-                event["request_id"], event["time_min"]
-            )
-
-    if not delivered_by_id:
-        return {"avg_lead_time_min": None}
-
-    total_lead_time = sum(
-        delivered_min - arrival_by_id[request_id]
-        for request_id, delivered_min in delivered_by_id.items()
-    )
-
-    return {
-        "avg_lead_time_min": total_lead_time / len(delivered_by_id)
     }
 
 def analyze_events(config, demand, initial_state, events):
@@ -389,12 +347,6 @@ def analyze_events(config, demand, initial_state, events):
     metrics.update(
         calculate_wait_times(
             config, horizon_events, initial_state
-        )
-    )
-
-    metrics.update(
-        calculate_lead_time(
-            config, demand, initial_state, horizon_events
         )
     )
 
