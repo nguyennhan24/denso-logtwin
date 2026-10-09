@@ -1,0 +1,54 @@
+# ===== Data Layer config (Trung, Phase 4) =====
+# Mọi ngưỡng / giả định của Data Layer nằm ở đây, không viết cứng trong code.
+
+timezone: Asia/Ho_Chi_Minh
+base_date: "2026-10-01"     # CLI: --day 1 = base_date, --day 21 = 2026-10-21
+raw_root: data/raw
+silver_root: data/silver
+gold_root: data/gold
+
+day_start: "06:00"          # dùng làm feed_updated_at khi một nguồn chưa có dữ liệu nào trước as_of
+origin_id: STORE-1         # WMS không có cột kho; v0.1 chỉ có 1 kho (giống config/generator.yaml)
+
+# Danh sách xe (dữ liệu tham chiếu). Xe chưa có sự kiện nào vẫn phải được đếm vào total.
+fleet:
+  amr: [AMR-01, AMR-02, AMR-03, AMR-04, AMR-05, AMR-06]
+  agv: [AGV-01, AGV-02, AGV-03, AGV-04]
+
+# Trạng thái AMR = sự kiện gần nhất.
+#   busy    = đang chở hàng (DISPATCH) hoặc đang chạy về kho (RELEASE)
+#   blocked = đứng ở cổng chờ người nhận thùng (ARRIVE_GATE) -> không nhận được việc mới
+#   idle    = thật sự rảnh; offline = hỏng
+amr_status_by_event:
+  DISPATCH: busy
+  ARRIVE_GATE: blocked
+  RELEASE: busy
+  RETURNED: idle
+  FAULT: offline
+  RECOVER: idle
+
+# Freshness theo nguồn: type = stream / batch / manual; stale nếu tuổi > stale_after_min
+feeds:
+  wms:        {type: batch,  stale_after_min: 15}
+  amr:        {type: stream, stale_after_min: 5}
+  agv:        {type: stream, stale_after_min: 15}
+  production: {type: batch,  stale_after_min: 1440}
+  labor:      {type: batch,  stale_after_min: 1440}
+  excel:      {type: manual, stale_after_min: 150}   # nhập mỗi 120 phút + 30 phút dư
+
+# Freshness theo đơn: đơn mở không có sự kiện mới quá ngưỡng này -> stale
+order_stale_after_min: 30
+
+# Ngưỡng kiểm tra nội dung (bước validate)
+valid_ranges:
+  qty_packs:      {min: 1, max: 50}
+  planned_qty:    {min: 0, max: 1000}
+  need_by_min:    {min: 0, max: 480}   # need_by - created_at (phút)
+  agv_trip_min:   {min: 0, max: 60}    # deliver - load
+  pack_min:       {min: 0, max: 90}    # excel end - start
+
+# Ước lượng thời gian còn lại của job đang chạy
+estimate:
+  min_samples: 5                       # ít hơn số mẫu này -> dùng fallback
+  fallback_min: {amr: 4.0, packer: 5.5, agv: 3.0}
+  overdue_remaining_min: 0.5           # contract đòi remaining_min > 0
