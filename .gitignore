@@ -7,4 +7,6 @@ __pycache__/
 data/raw/*
 data/unified/*
 data/results/*
+data/silver/*
+data/gold/*
 !data/**/.gitkeep
