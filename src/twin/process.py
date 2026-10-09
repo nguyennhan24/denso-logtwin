@@ -1,20 +1,29 @@
 import simpy
-from resources import make_resources
-from entities import MaterialRequest, ScenarioConfig, SimulationResult
+from .resources import make_resources
+from .entities import MaterialRequest, ScenarioConfig, SimulationResult
 STAGE = ("amr", "packer", "agv")
-def material_flow(env, material_request, pools, config, events, start_stage='amr', remaining_min=None):
+def material_flow(env, material_request, pools, config, events, start_stage='amr', remaining_min=None, initial_priority=None):
     if start_stage not in STAGE:
         raise ValueError("Stage must be AMR, AGV or Packer")
 
+    def request_slot(stage):
+        # Thời điểm đến luôn đứng trước ID: job đã chờ giữ FIFO.
+        priority = (env.now, 2, material_request.request_id)
+        if stage == start_stage and initial_priority is not None:
+            priority = initial_priority
+
+        def on_queued():
+            events.append({
+                "time_min": env.now,
+                "request_id": material_request.request_id,
+                "stage": stage,
+                "event": "queued",
+            })
+
+        return pools[stage].request(priority=priority, on_queued=on_queued)
+
     if(start_stage == "amr"): # Chỉ chạy nếu start_stage là AMR
-        with pools['amr'].request() as req:
-            if not req.triggered:
-                events.append({
-                    "time_min": env.now,
-                    "request_id": material_request.request_id,
-                    "stage": "amr",
-                    "event": "queued",
-                })
+        with request_slot("amr") as req:
             yield req
             print(material_request.request_id, 'start', env.now)
             events.append({
@@ -39,14 +48,7 @@ def material_flow(env, material_request, pools, config, events, start_stage='amr
             }) 
 
     if(start_stage == 'amr' or start_stage == 'packer'):
-        with pools['packer'].request() as req:
-            if not req.triggered:
-                events.append({
-                    "time_min": env.now,
-                    "request_id": material_request.request_id,
-                    "stage": "packer",
-                    "event": "queued",
-                })            
+        with request_slot("packer") as req:
             yield req
             print(material_request.request_id, 'start', env.now)
 
@@ -71,14 +73,7 @@ def material_flow(env, material_request, pools, config, events, start_stage='amr
                 "event": "finish",        
             }) 
 
-    with pools['agv'].request() as req:
-        if not req.triggered:
-            events.append({
-                "time_min": env.now,
-                "request_id": material_request.request_id,
-                "stage": "agv",
-                "event": "queued",
-            })        
+    with request_slot("agv") as req:
         yield req
         print(material_request.request_id, 'start', env.now)
                 

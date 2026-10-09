@@ -1,0 +1,413 @@
+from decimal import Decimal
+
+STAGES = ("amr", "packer", "agv")
+
+def count_completion(demand, initial_state, events):
+    delivered_ids = {
+        event["request_id"]
+        for event in events
+        if event["stage"] == "line"
+        and event["event"] == "delivered"
+    }
+
+    wip_count = 0
+    if initial_state is not None:
+        wip_count = (
+            len(initial_state.active_jobs)
+            + len(initial_state.queued_jobs)
+        )
+
+    total_count = len(demand) + wip_count
+
+    return {
+        "throughput_count": len(delivered_ids),
+        "unfinished_count": total_count - len(delivered_ids),
+    }
+
+def sample_times(horizon_min, sample_every_min):
+    """Tạo các mốc lấy mẫu, luôn bao gồm phút 0 và horizon."""
+    horizon = Decimal(str(horizon_min))
+    step = Decimal(str(sample_every_min))
+
+    if (
+        not horizon.is_finite()
+        or not step.is_finite()
+        or horizon <= 0
+        or step <= 0
+    ):
+        raise ValueError(
+            "horizon_min và sample_every_min phải hữu hạn và > 0"
+        )
+
+    if horizon % step != 0:
+        raise ValueError(
+            "sample_every_min phải chia hết horizon_min"
+        )
+
+    times = []
+    time = Decimal("0")
+
+    while time < horizon:
+        times.append(float(time))
+        time += step
+
+    times.append(float(horizon))
+
+    return times
+
+def build_timeline(config, events, initial_state=None):
+    # Sắp xếp theo thời gian, giữ thứ tự các event cùng timestamp.
+    ordered_events = sorted(
+        events,
+        key=lambda event: event["time_min"],
+    )
+
+    queued = {stage: set() for stage in STAGES}
+    busy = {stage: set() for stage in STAGES}
+
+    arrived_ids = set()
+    delivered_ids = set()
+
+    # Nạp các job đã có sẵn tại thời điểm bắt đầu mô phỏng.
+    if initial_state is not None:
+        for job in initial_state.queued_jobs:
+            request_id = job.request.request_id
+            queued[job.stage].add(request_id)
+            arrived_ids.add(request_id)
+
+        for job in initial_state.active_jobs:
+            request_id = job.request.request_id
+            busy[job.stage].add(request_id)
+            arrived_ids.add(request_id)
+
+    timeline = []
+    event_index = 0
+
+    for time in sample_times(
+        config.horizon_min,
+        config.sample_every_min,
+    ):
+        # Xử lý toàn bộ sự kiện đến mốc lấy mẫu này.
+        while (
+            event_index < len(ordered_events)
+            and ordered_events[event_index]["time_min"] <= time
+        ):
+            event = ordered_events[event_index]
+
+            request_id = event["request_id"]
+            stage = event["stage"]
+            event_name = event["event"]
+
+            if event_name == "arrival":
+                arrived_ids.add(request_id)
+
+            elif stage in STAGES:
+                if event_name == "queued":
+                    queued[stage].add(request_id)
+
+                elif event_name == "start":
+                    queued[stage].discard(request_id)
+                    busy[stage].add(request_id)
+
+                elif event_name == "finish":
+                    busy[stage].discard(request_id)
+
+            elif stage == "line" and event_name == "delivered":
+                delivered_ids.add(request_id)
+
+            event_index += 1
+
+        timeline.append({
+            "time_min": time,
+            "queue": {
+                stage: len(queued[stage])
+                for stage in STAGES
+            },
+            "busy": {
+                stage: len(busy[stage])
+                for stage in STAGES
+            },
+            "completed_count": len(delivered_ids),
+            "unfinished_arrived_count": len(
+                arrived_ids - delivered_ids
+            ),
+        })
+
+    return timeline
+
+def calculate_wait_times(config, events, initial_state=None):
+    queue_entered = {}
+    initial_active = set()
+
+    wait_by_request = {}
+    wait_by_stage = {stage: [] for stage in STAGES}
+    delivered_ids = set()
+
+    # WIP đang chờ: bắt đầu quan sát thời gian chờ từ phút 0.
+    if initial_state is not None:
+        for job in initial_state.queued_jobs:
+            key = (job.request.request_id, job.stage)
+            queue_entered[key] = 0.0
+
+        for job in initial_state.active_jobs:
+            key = (job.request.request_id, job.stage)
+            initial_active.add(key)
+
+    ordered_events = sorted(
+        events,
+        key=lambda event: event["time_min"],
+    )
+
+    for event in ordered_events:
+        time = event["time_min"]
+
+        if time > config.horizon_min:
+            break
+
+        request_id = event["request_id"]
+        stage = event["stage"]
+        event_name = event["event"]
+        key = (request_id, stage)
+
+        if stage in STAGES:
+            # Lượt active đã bắt đầu trước snapshot.
+            if key in initial_active and time == 0:
+                continue
+
+            if event_name == "queued":
+                # Giữ thời điểm vào queue đầu tiên nếu log bị lặp.
+                queue_entered.setdefault(key, time)
+
+            elif event_name == "start":
+                # Không có queued => bắt đầu ngay => wait = 0.
+                queued_time = queue_entered.pop(key, time)
+                wait = time - queued_time
+
+                wait_by_stage[stage].append(wait)
+
+                wait_by_request[request_id] = (
+                    wait_by_request.get(request_id, 0.0) + wait
+                )
+
+        elif stage == "line" and event_name == "delivered":
+            delivered_ids.add(request_id)
+
+    # Tổng chờ qua các stage, trung bình trên request đã giao.
+    avg_total_wait_min = None
+
+    if delivered_ids:
+        total_wait = sum(
+            wait_by_request.get(request_id, 0.0)
+            for request_id in delivered_ids
+        )
+        avg_total_wait_min = total_wait / len(delivered_ids)
+
+    avg_wait_by_stage_min = {
+        stage: (
+            sum(waits) / len(waits)
+            if waits else None
+        )
+        for stage, waits in wait_by_stage.items()
+    }
+
+    # Thời gian đã chờ của các lượt vẫn chưa bắt đầu tại horizon.
+    open_queue_wait_min = {
+        stage: sum(
+            config.horizon_min - entered_time
+            for (_, queued_stage), entered_time in queue_entered.items()
+            if queued_stage == stage
+        )
+        for stage in STAGES
+    }
+
+    return {
+        "avg_total_wait_min": avg_total_wait_min,
+        "avg_wait_by_stage_min": avg_wait_by_stage_min,
+        "open_queue_wait_min": open_queue_wait_min,
+    }
+
+def calculate_resource_metrics(config, events, initial_state=None):
+    queued = {stage: set() for stage in STAGES}
+    busy = {stage: set() for stage in STAGES}
+
+    busy_area = {stage: 0.0 for stage in STAGES}
+    queue_area = {stage: 0.0 for stage in STAGES}
+    peak_queue = {stage: 0 for stage in STAGES}
+
+    if initial_state is not None:
+        for job in initial_state.queued_jobs:
+            queued[job.stage].add(job.request.request_id)
+
+        for job in initial_state.active_jobs:
+            busy[job.stage].add(job.request.request_id)
+
+    ordered_events = sorted(
+        events,
+        key=lambda event: event["time_min"],
+    )
+
+    previous_time = 0.0
+    event_index = 0
+
+    def accumulate_until(time):
+        nonlocal previous_time
+
+        duration = time - previous_time
+
+        for stage in STAGES:
+            busy_area[stage] += len(busy[stage]) * duration
+            queue_area[stage] += len(queued[stage]) * duration
+
+            if duration > 0:
+                peak_queue[stage] = max(
+                    peak_queue[stage],
+                    len(queued[stage]),
+                )
+
+        previous_time = time
+
+    while event_index < len(ordered_events):
+        time = ordered_events[event_index]["time_min"]
+
+        if time > config.horizon_min:
+            break
+
+        if time < 0:
+            raise ValueError("time_min không được âm")
+
+        # Trạng thái hiện tại tồn tại từ previous_time đến time.
+        accumulate_until(time)
+
+        # Xử lý toàn bộ event cùng timestamp.
+        while (
+            event_index < len(ordered_events)
+            and ordered_events[event_index]["time_min"] == time
+        ):
+            event = ordered_events[event_index]
+
+            stage = event["stage"]
+            request_id = event["request_id"]
+            event_name = event["event"]
+
+            if stage in STAGES:
+                if event_name == "queued":
+                    queued[stage].add(request_id)
+
+                elif event_name == "start":
+                    queued[stage].discard(request_id)
+                    busy[stage].add(request_id)
+
+                elif event_name == "finish":
+                    busy[stage].discard(request_id)
+
+            event_index += 1
+
+        for stage in STAGES:
+            peak_queue[stage] = max(
+                peak_queue[stage],
+                len(queued[stage]),
+            )
+
+    # Tính cả khoảng từ event cuối đến horizon.
+    accumulate_until(config.horizon_min)
+
+    return {
+        "utilization": {
+            stage: (
+                busy_area[stage]
+                / (config.capacity[stage] * config.horizon_min)
+            )
+            for stage in STAGES
+        },
+        "avg_queue_length": {
+            stage: queue_area[stage] / config.horizon_min
+            for stage in STAGES
+        },
+        "peak_queue": peak_queue,
+        "queue_length_end": {
+            stage: len(queued[stage])
+            for stage in STAGES
+        },
+        "busy_end": {
+            stage: len(busy[stage])
+            for stage in STAGES
+        },
+    }
+
+def calculate_lead_time(config, demand, initial_state, events):
+    """Tính lead time trung bình trên các request đã giao."""
+    arrival_by_id = {
+        request.request_id: request.arrival_min
+        for request in demand
+    }
+
+    # WIP được đo từ snapshot, tức phút 0.
+    if initial_state is not None:
+        for job in (*initial_state.active_jobs, *initial_state.queued_jobs):
+            arrival_by_id[job.request.request_id] = 0.0
+
+    delivered_by_id = {}
+
+    for event in events:
+        if (
+            0 <= event["time_min"] <= config.horizon_min
+            and event["stage"] == "line"
+            and event["event"] == "delivered"
+        ):
+            # Mỗi request chỉ tính một lần.
+            delivered_by_id.setdefault(
+                event["request_id"], event["time_min"]
+            )
+
+    if not delivered_by_id:
+        return {"avg_lead_time_min": None}
+
+    total_lead_time = sum(
+        delivered_min - arrival_by_id[request_id]
+        for request_id, delivered_min in delivered_by_id.items()
+    )
+
+    return {
+        "avg_lead_time_min": total_lead_time / len(delivered_by_id)
+    }
+
+def analyze_events(config, demand, initial_state, events):
+    """Gom các KPI và timeline, trả về (metrics, timeline)."""
+
+    # Chỉ tính event trong horizon, kể cả đúng tại horizon.
+    horizon_events = [
+        event for event in events
+        if event["time_min"] <= config.horizon_min
+    ]
+
+    # 1. Đếm số request hoàn thành và chưa hoàn thành.
+    metrics = count_completion(
+        demand, initial_state, horizon_events
+    )
+
+    # 2. Bổ sung các chỉ số thời gian chờ.
+    metrics.update(
+        calculate_wait_times(
+            config, horizon_events, initial_state
+        )
+    )
+
+    metrics.update(
+        calculate_lead_time(
+            config, demand, initial_state, horizon_events
+        )
+    )
+
+    # 3. Bổ sung utilization và các chỉ số queue.
+    metrics.update(
+        calculate_resource_metrics(
+            config, horizon_events, initial_state
+        )
+    )
+
+    # 4. Dựng trạng thái tại từng mốc lấy mẫu.
+    timeline = build_timeline(
+        config, horizon_events, initial_state
+    )
+
+    return metrics, timeline
