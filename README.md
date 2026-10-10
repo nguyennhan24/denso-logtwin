@@ -166,11 +166,15 @@ python -c "import sys; print(sys.executable)"
 python -m src.generator --seed 42 --date 2026-10-21 --days 1
 ```
 
-Dữ liệu được ghi vào:
+Dữ liệu được ghi vào thư mục có **seed thật** trong tên (đổi seed không ghi đè nhau):
 
 ```text
-data/raw/2026-10-21/
+data/raw/2026-10-21_seed42/
 ```
+
+`--days N` sinh N ngày liên tiếp, ngày thứ i dùng seed `--seed + i` (tên thư mục ghi đúng seed đó).
+`--legacy-dir` ghi theo layout cũ `data/raw/<ngày>/` (không có seed). Gọi `generate_day()` từ Python
+vẫn mặc định layout cũ (`seed_in_dirname=False`) vì `src/validation/phase8.py` dùng layout này.
 
 Bao gồm:
 
@@ -210,7 +214,18 @@ order_status.parquet
 data_quality.json
 ```
 
-`--seed` của Data Layer dùng để đặt tên output; raw phải được sinh trước bằng seed tương ứng.
+`--seed` của Data Layer chọn raw `data/raw/<ngày>_seed<seed>/` và đặt tên output. Nếu chỉ có thư mục cũ
+`data/raw/<ngày>/` thì Data Layer dùng nó và in cảnh báo (không rõ seed thật). `--raw-dir` để chỉ định thẳng.
+
+Sinh nhiều seed cho cùng ngày (ground truth cho backtest), seed lấy từ `batch.seeds` trong `config/generator.yaml`:
+
+```bash
+python -m src.generator.batch                         # ngày 1..21 x seeds [42, 7, 123]
+python -m src.generator.batch --days 21 --seeds 42 7  # chỉ ngày 21
+```
+
+Ngày 21 dùng seed gốc `s`; ngày `d` khác dùng `s + 1000 × (21 − d)` (seed gốc phải < 1000), nên ngày 21 seed 42
+luôn là dữ liệu demo hiện tại.
 
 ### 3. Chạy baseline từ snapshot
 
@@ -260,6 +275,34 @@ data/results/phase7_scenarios.json
 Các scenario bao gồm tăng AMR, worker, AGV, kết hợp tài nguyên và giảm thời gian đóng gói.
 
 Mỗi scenario chạy trên cùng demand và snapshot. Twin sao chép đầu vào để các lần chạy không thay đổi dữ liệu của nhau.
+
+### Sinh demand tương lai từ production plan (NEXT)
+
+```bash
+python -m src.demand --day 21 --seed 42 --as-of 14:10 --plan spike_14_16_x3
+python -m src.demand --day 21 --seed 42 --as-of 14:10 --plan baseline --mode poisson --horizon 60
+```
+
+| Tham số | Ý nghĩa |
+|---|---|
+| `--plan` | Tên file trong `config/plans/` (`baseline`, `spike_14_16_x3`) hoặc đường dẫn YAML |
+| `--mode` | `expected` (mặc định, số lượt tất định) hoặc `poisson` (giống Generator) |
+| `--horizon` | Độ dài cửa sổ tính từ `--as-of`, phút (mặc định 140 = 14:10 → 16:30) |
+| `--seed` | Chọn raw `data/raw/<ngày>_seed<seed>/` và là seed của phần ngẫu nhiên khi quy đổi |
+
+Output (tên có plan và giờ nên không ghi đè nhau; mode `poisson` thêm hậu tố `_poisson`):
+
+```text
+data/gold/2026-10-21_seed42/demand_spike_14_16_x3_1410.parquet   # 6 trường contract + cột phụ (need_by_at...)
+data/gold/2026-10-21_seed42/demand_spike_14_16_x3_1410.json      # list MaterialRequest, cho runner --demand
+```
+
+Demand chỉ phụ thuộc plan + BOM (`config/generator.yaml`) + as_of + seed; không đọc feed sự kiện hay `_truth/`.
+Quy tắc quy đổi: [docs/data_dictionary.md](docs/data_dictionary.md) mục 7. `spike_14_16_x3` là kịch bản giả định,
+Generator ngày 21 không có spike. So với truth: `python scripts/check_demand.py`.
+
+Lưu ý: runner Phase 7 lấy horizon từ `default_horizon_min` (60) trong `config/scenarios.yaml`, nên file demand đưa
+vào `runner --demand` phải sinh với `--horizon` ≤ 60.
 
 ### Thêm demand mới
 
@@ -316,6 +359,8 @@ python -m src.validation.backtest
 ```
 
 Lệnh đọc gold snapshot, replay demand thực tế trong horizon và so sánh với truth cùng ngày.
+Mặc định backtest tìm raw ở `data/raw/<ngày>/` (layout cũ); với raw có seed, truyền
+`--raw data/raw/2026-10-21_seed42`.
 
 Output:
 
@@ -447,7 +492,8 @@ denso-logtwin/
 ├── config/
 │   ├── generator.yaml        # Nhà máy giả, BOM, service, sự cố
 │   ├── data_layer.yaml       # Mapping, freshness, ước lượng
-│   └── scenarios.yaml        # Scenario, KPI weights, ngưỡng
+│   ├── scenarios.yaml        # Scenario, KPI weights, ngưỡng
+│   └── plans/                # Production plan cho NEXT (baseline, spike_14_16_x3)
 ├── contracts/
 │   ├── mock_v0_1.json
 │   └── validate_contracts.py
@@ -455,7 +501,7 @@ denso-logtwin/
 │   ├── generator/            # Sinh feed và ground truth
 │   ├── data_layer/           # Raw → silver/gold
 │   ├── twin/                 # Engine SimPy, KPI và gold adapter
-│   ├── demand/               # Forecast và risk helpers
+│   ├── demand/               # Plan → MaterialRequest tương lai; forecast và risk helpers
 │   ├── scenario/             # Scenario, runner, ranking
 │   └── validation/           # Backtest, calibration, báo cáo
 ├── tests/                    # Unit/integration tests và fixtures
@@ -476,6 +522,7 @@ Dữ liệu raw, silver, gold và results được bỏ qua bởi `.gitignore` v
 | [`config/generator.yaml`](config/generator.yaml) | Ngày làm việc, tài nguyên, production plan, BOM, thời gian ngẫu nhiên, sự cố |
 | [`config/data_layer.yaml`](config/data_layer.yaml) | Timezone, đường dẫn, mã tài nguyên, validation, freshness, remaining-time estimates |
 | [`config/scenarios.yaml`](config/scenarios.yaml) | Service mặc định, horizon, WHAT-IF, ranking weights và ngưỡng bottleneck/risk |
+| [`config/plans/*.yaml`](config/plans) | Production plan cho demand tương lai: `base: feed`, `adjust`, `rows` |
 
 Calibration trong Phase 8 được truyền trực tiếp vào các lần chạy `CALIBRATED`; pipeline không tự ghi đè `default_service_min` trong config scenario.
 

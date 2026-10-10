@@ -3,7 +3,8 @@
     python -m src.data_layer --day 21 --seed 42 --as-of 14:10
 
 --day N  -> ngày base_date + (N-1) trong config/data_layer.yaml (mặc định 2026-10-21 cho N=21).
-Raw đọc từ data/raw/<ngày>/ (sinh bằng: python -m src.generator --seed 42 --date 2026-10-21).
+Raw đọc từ data/raw/<ngày>_seed<seed>/ (sinh bằng: python -m src.generator --seed 42 --date 2026-10-21).
+Không có thì lùi về data/raw/<ngày>/ (layout cũ, không rõ seed) và in cảnh báo.
 Output ghi vào data/silver/<ngày>_seed<seed>/ và data/gold/<ngày>_seed<seed>/.
 """
 import argparse
@@ -12,7 +13,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from . import load_config
+from . import load_config, resolve_raw_dir
 from .contract_check import ContractError
 from .pipeline import run
 
@@ -21,15 +22,20 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 p = argparse.ArgumentParser(description="Data Layer: 6 feed thô -> state/order_status/journey tại as_of")
 p.add_argument("--day", type=int, required=True, help="ngày thứ mấy (1 = base_date trong config)")
-p.add_argument("--seed", type=int, required=True, help="seed đã dùng để sinh raw (chỉ để đặt tên thư mục output)")
+p.add_argument("--seed", type=int, required=True, help="seed đã dùng để sinh raw (chọn thư mục raw và đặt tên output)")
 p.add_argument("--as-of", required=True, help="giờ chụp trạng thái, HH:MM")
-p.add_argument("--raw-dir", default=None, help="bỏ trống = data/raw/<ngày>")
+p.add_argument("--raw-dir", default=None, help="bỏ trống = data/raw/<ngày>_seed<seed>")
 p.add_argument("--config", default="config/data_layer.yaml")
 a = p.parse_args()
 
 cfg = load_config(a.config)
 day = date.fromisoformat(cfg["base_date"]) + timedelta(days=a.day - 1)
-raw_dir = Path(a.raw_dir) if a.raw_dir else Path(cfg["raw_root"]) / day.isoformat()
+if a.raw_dir:
+    raw_dir = Path(a.raw_dir)
+else:
+    raw_dir, legacy = resolve_raw_dir(cfg["raw_root"], day.isoformat(), a.seed)
+    if legacy:
+        print(f"CẢNH BÁO: không có {raw_dir}_seed{a.seed}, dùng thư mục cũ {raw_dir} (không rõ seed thật)")
 if not raw_dir.exists():
     sys.exit(f"Không thấy {raw_dir}. Sinh dữ liệu trước:  python -m src.generator --seed {a.seed} --date {day}")
 

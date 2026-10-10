@@ -1,6 +1,6 @@
 # 6 feed của World Generator (Trung)
 
-Mỗi ngày sinh ra một thư mục `data/raw/<date>/`. Các feed cố ý **không dùng chung ID chuẩn**, giống các hệ thống rời rạc trong nhà máy thật. Phase 4 (Data Layer) có nhiệm vụ ghép chúng lại thành `MaterialRequest` và `CurrentLogisticsState`.
+Mỗi ngày sinh ra một thư mục `data/raw/<date>_seed<seed>/` (layout cũ không có seed: `data/raw/<date>/`, xem `docs/data_dictionary.md` mục 1). Các feed cố ý **không dùng chung ID chuẩn**, giống các hệ thống rời rạc trong nhà máy thật. Phase 4 (Data Layer) có nhiệm vụ ghép chúng lại thành `MaterialRequest` và `CurrentLogisticsState`.
 
 | Feed | Nguồn giả lập | Kiểu cập nhật | Định dạng giờ | Khóa lượt giao |
 | --- | --- | --- | --- | --- |

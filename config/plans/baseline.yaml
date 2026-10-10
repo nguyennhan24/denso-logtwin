@@ -1,0 +1,7 @@
+# Plan "baseline": đúng kế hoạch sản xuất đã công bố trong production.csv của ngày (không chỉnh gì).
+# Định dạng plan: xem src/demand/planner.py và docs/data_dictionary.md mục 7.
+plan_id: baseline
+description: Kế hoạch sản xuất đã công bố trong feed production của ngày
+base: feed
+adjust: []
+rows: []

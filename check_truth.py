@@ -2,7 +2,7 @@
 
 Cách dùng (từ thư mục gốc project, trong .venv):
     python check_truth.py
-    python check_truth.py data/raw/2026-10-21 data/gold/2026-10-21_seed42
+    python check_truth.py data/raw/2026-10-21_seed42 data/gold/2026-10-21_seed42
 
 Lưu ý: journey dựng tại as_of nào thì chỉ chứa đơn đến as_of đó.
 Để so toàn ngày, chạy pipeline với as_of cuối ngày (ví dụ 23:59) trước.
@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pandas as pd
 
-RAW = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/raw/2026-10-21")
+# Mặc định raw có seed trong tên; máy còn layout cũ (data/raw/<ngày>/) thì lùi về đó
+RAW = Path(sys.argv[1]) if len(sys.argv) > 1 else next(
+    (p for p in (Path("data/raw/2026-10-21_seed42"), Path("data/raw/2026-10-21")) if p.exists()),
+    Path("data/raw/2026-10-21_seed42"))
 GOLD = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/gold/2026-10-21_seed42")
 
 # Ưu tiên cột mã đơn theo thứ tự này

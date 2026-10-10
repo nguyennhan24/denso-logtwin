@@ -1,20 +1,28 @@
-# Data dictionary — 6 feed thô và output của Data Layer (Phase 4)
+# Data dictionary — 6 feed thô, output của Data Layer (Phase 4) và Demand (Phase 6)
 
-Tài liệu này ghi lại những gì đọc được từ `src/generator/` và dữ liệu thật `data/raw/2026-10-21/`
+Tài liệu này ghi lại những gì đọc được từ `src/generator/` và dữ liệu thật `data/raw/2026-10-21_seed42/`
 (sinh bằng `python -m src.generator --seed 42 --date 2026-10-21`). Bổ sung cho `docs/feeds.md`.
 
 ## 1. Thư mục raw
 
 ```
-data/raw/<YYYY-MM-DD>/
+data/raw/<YYYY-MM-DD>_seed<seed>/        <- Generator CLI / batch (seed THẬT của rng ngày đó)
+data/raw/<YYYY-MM-DD>/                   <- layout cũ: generate_day() mặc định, phase8.py, --legacy-dir
   wms.csv  amr.csv  agv.csv  production.csv  labor.csv  excel.csv   <- 6 feed
   master.csv                                                         <- bảng mã tham chiếu (tĩnh)
-  _truth/requests.csv, _truth/events.csv                             <- ĐÁP ÁN, Data Layer KHÔNG đọc
+  _truth/requests.csv, _truth/events.csv                             <- ĐÁP ÁN, Data Layer / Demand KHÔNG đọc
 ```
 
-Tên thư mục chỉ có ngày, **không có seed**. `--days N` của Generator dùng seed = seed gốc + i, nên
-`data/raw/2026-10-21` có thể là seed 42 (lệnh ở trên) hoặc seed 62 (`--date 2026-10-01 --days 21`).
-Data Layer ghi output vào `<ngày>_seed<seed>` để phân biệt.
+Từ Phase 6, `python -m src.generator` ghi vào `<ngày>_seed<seed>` nên đổi seed không ghi đè nhau. `--days N`
+dùng seed = seed gốc + i cho ngày thứ i, và tên thư mục ghi đúng seed đó. Thư mục cũ `data/raw/<ngày>/` không rõ seed
+(ngày 2026-10-21 có thể là seed 42 hoặc seed 62 nếu sinh bằng `--date 2026-10-01 --days 21`); Data Layer và Demand
+chỉ dùng nó khi không có thư mục có seed, và in cảnh báo.
+
+Sinh hàng loạt (`python -m src.generator.batch`, seed gốc trong `batch.seeds` của `config/generator.yaml`):
+ngày 21 dùng seed gốc `s`, ngày `d` khác dùng `s + 1000 × (21 − d)`, yêu cầu `0 ≤ s < 1000` → không hai thư mục nào
+trùng seed, và ngày 21 seed 42 luôn là dữ liệu demo. Phase 8 (`src/validation/phase8.py`) tự sinh riêng 1 seed/ngày
+(seed 42 + i) vào `data/results/phase8_data/raw/<ngày>/`; batch không làm lại việc đó mà bổ sung nhiều seed cho
+cùng một ngày.
 
 Số dòng ngày 21 seed 42: wms 430, amr 1719, agv 428, production 32, labor 6, excel 406, master 10.
 
@@ -258,3 +266,82 @@ Muốn biết số xe rảnh thật thì đọc `resource_counts.<loại>.idle`.
 `clean_rows_after_validate`), `quarantine_total`, `quarantine_by_reason`, `quarantine_by_feed_reason`,
 `link_rate` (amr/agv/excel/overall), `estimated` (danh sách trường ước lượng, tỉ lệ đơn có ước lượng, số đơn khâu suy ra),
 `overdue_orders`, `late_orders`, `stale_sources`, `stale_source_count`, `stale_orders`.
+
+
+## 7. Demand tương lai (Phase 6: `src/demand/planner.py`, `conversion.py`)
+
+Production plan → danh sách `MaterialRequest` tương lai để Twin chạy tới trước (góc nhìn NEXT).
+Demand **chỉ sinh tải**: không đoán nghẽn, không tính KPI, không gán bottleneck.
+
+### Đầu vào
+| Nguồn | Nội dung |
+|---|---|
+| `production.csv` + `master.csv` của ngày | Plan đã công bố (`base: feed`). Coi là công bố lúc `hour_start` sớm nhất (06:00), cùng giả định với Data Layer mục 4; `as_of` sớm hơn → lỗi |
+| `config/plans/<plan>.yaml` | `plan_id`, `base` (`feed`/`none`), `adjust: [{from, to, factor}]`, `rows: [{hour_start, line, product, planned_qty}]` |
+| `config/generator.yaml` | **Một nguồn định mức duy nhất**, dùng chung với Generator: `products.*.bom_packs_per_unit`, `packs_per_trip`, `need_by_buffer_min`, `origin_id` |
+
+Plan theo **giờ**: `from`, `to`, `hour_start` phải là giờ tròn; `adjust` nhân `planned_qty` các giờ có
+`hour_start ∈ [from, to)`. Thứ tự áp dụng: base → adjust → rows (rows là giá trị tuyệt đối, ghi đè base đã adjust,
+hoặc thêm dòng mới). Line/product trong rows dùng ID chuẩn (`L1`, `P100`); ID lạ (vd `"Line A"`) → lỗi.
+
+Không đọc `_truth/` và không đọc feed sự kiện (wms/amr/agv/excel/labor): demand chỉ phụ thuộc
+**plan + BOM + as_of + seed**. Có test thay toàn bộ feed sự kiện bằng dữ liệu seed khác → demand giống hệt.
+
+Plan mẫu:
+- `baseline`: đúng feed production của ngày.
+- `spike_14_16_x3`: `planned_qty × 3` cho giờ 14:00 và 15:00. **Kịch bản giả định**, Generator ngày 21 không có spike
+  (`hour_profile` lúc 14h = 0.6, giờ đổi ca); không dùng để so với `_truth`.
+
+### Quy tắc quy đổi (mỗi ô = giờ × line × product × material)
+| Bước | `expected` (mặc định) | `poisson` |
+|---|---|---|
+| Pack cần | `packs = planned_qty × bom_packs_per_unit` | như trái |
+| Lượt kỳ vọng | `lam = packs / mean(packs_per_trip)` = packs / 4 | như trái |
+| Số lượt (`count_trips`) | Làm tròn **cộng dồn**: `n_h = round(Σ lam đến giờ h) − round(Σ lam đến giờ h−1)` theo (line, product, material), nửa làm tròn lên → tổng cả ngày = round(Σ lam) | `n ~ Poisson(lam)` (giống `src/generator/demand.py`) |
+| Thời điểm (`place_trips`) | Chia giờ thành n khoảng bằng nhau, lượt i ở `(i + U(0,1)) × 60/n` phút | n điểm `Uniform(0, 60)` |
+| `quantity` | Tổng pack của giờ (cũng làm tròn cộng dồn) chia đều cho n lượt, phần dư cho các lượt đầu, kẹp `[2, 6]` | số nguyên đều trong `[2, 6]` |
+| Deadline | `need_by_at = created_at + need_by_buffer_min` (30 phút) | như trái |
+
+- Ngẫu nhiên: mỗi ô có rng riêng `default_rng([seed, crc32(khóa ô)])`. Cùng plan + seed → giống hệt; đổi plan ở
+  một giờ không xê dịch số ngẫu nhiên của giờ khác. Ở `expected`, seed chỉ đổi thời điểm, không đổi số lượt.
+- Sinh cả ngày rồi mới cắt cửa sổ `[as_of, as_of + horizon)` → hai `as_of` khác nhau thấy cùng các lượt ở phần giao.
+- Làm tròn cộng dồn làm lượt "dư" có thể dồn sang giờ sau: đổi plan ở giờ h có thể làm giờ sau lệch ±1 lượt/ô.
+  Các giờ trước h không đổi.
+- `quantity` (mode `expected`, hàm `_split_even`): chia đều rồi **kẹp `[2, 6]`**, nên ở giờ có ít pack (hoặc lượt dồn
+  từ làm tròn cộng dồn) tổng pack giao có thể lệch nhẹ so với tổng pack cần; pack của ô 0 lượt cũng không được giao.
+  Ngày 21 cả ngày: seed 42 cần 1797.6 / giao 1799 (+0.08%), seed 7 −0.02%, seed 123 −0.05% (1/96 ô bị kẹp).
+- `quantity` không ảnh hưởng thời gian phục vụ của Twin v0.1 (contract mục 1).
+
+### Đầu ra
+`data/gold/<ngày>_seed<seed>/demand_<plan>[_poisson]_HHMM.json` — list đúng 6 trường contract v0.1 mục 2
+(đưa thẳng vào `runner --demand` hoặc `MaterialRequest(**r)`).
+
+`demand_<plan>[_poisson]_HHMM.parquet` — 6 trường contract + cột phụ:
+
+| Cột | Kiểu | Ý nghĩa |
+|---|---|---|
+| `request_id` | str | `DMD-<HHMM của as_of>-<00001>`, đánh số theo (arrival_min, line, material). Khác dạng `PICK-xxxxx` của WIP |
+| `arrival_min` | float | Phút từ `as_of` (= phút 0 của Twin), làm tròn 3 chữ số, trong `[0, horizon)` |
+| `origin_id` | str | `STORE-1` (từ `origin_id` của config) |
+| `destination_line_id` | str | `L1`/`L2` |
+| `material_id` | str | `M01`..`M06` |
+| `quantity` | int | Số pack của lượt, 2..6 |
+| `created_at` | datetime tz | Thời điểm phát yêu cầu (Asia/Ho_Chi_Minh) |
+| `need_by_at` | datetime tz | Hạn cần hàng. **Cột phụ, không vào request** (đề xuất B10 trong `contract_change_proposal.md`) |
+| `hour_start` | datetime tz | Giờ plan sinh ra lượt này |
+| `product` | str | Sản phẩm của dòng plan |
+| `plan_id`, `mode`, `seed` | str/str/int | Truy nguồn |
+
+Không có `priority`: không feed nào có (B3), contract v0.1 không có.
+
+### So với Generator (ngày 21 seed 42, cả ngày, `python scripts/check_demand.py`)
+| | expected | poisson | truth |
+|---|---|---|---|
+| Tổng request | 449 (+4.4%) | 456 (+6.0%) | 430 |
+| L1 / L2 | 237 / 212 | 240 / 216 | 209 / 221 |
+| MAE mỗi ô line × giờ | 3.59 | 3.62 | — |
+| Pack trung bình | 4.01 | 4.02 | 4.06 |
+
+Tổng kỳ vọng từ plan là 449.4 (L1 237.2, L2 212.2); truth L1 = 209 lệch −1.8 σ Poisson, L2 = 221 lệch +0.6 σ.
+Độ lệch Poisson tự nhiên mỗi ô ≈ √kỳ vọng ≈ 3.7 request, nên MAE 3.6/ô là mức lệch của một lần rút ngẫu nhiên,
+không phải sai hệ thống. Không chỉnh tham số để ép khớp.
