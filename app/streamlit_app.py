@@ -10,7 +10,19 @@ from pathlib import Path
 # Nối đường dẫn để import code thư mục mẹ (src)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.scenario.ranking import rank
-from src.demand.forecast import forecast_demand, detect_spikes, build_risk_timeline
+from dataclasses import asdict
+
+from contracts.validate_contracts import check_bundle
+from src.demand.planner import load_plan
+from src.demand.conversion import (
+    CONTRACT_FIELDS,
+    build_demand_table,
+    load_bom,
+)
+from src.twin.gold import load_gold_state
+from src.twin.entities import MaterialRequest, ScenarioConfig
+from src.scenario.scenarios import build_baseline, build_whatif_scenarios
+from src.scenario.runner import run_scenarios
 import yaml
 
 # ==========================================
@@ -112,6 +124,104 @@ def load_now_data():
         thresholds = yaml.safe_load(stream)["exception_severity"]
 
     return current_state, quality, thresholds
+
+def run_dashboard_scenarios():
+    """Sinh demand và chạy các scenario từ snapshot hiện tại."""
+    plan_id = st.sidebar.selectbox(
+        "Kế hoạch dự báo",
+        ["baseline", "spike_14_16_x3"],
+        key="forecast_plan",
+    )
+    seed = int(st.sidebar.number_input(
+        "Seed dữ liệu",
+        min_value=0,
+        value=42,
+        step=1,
+        key="forecast_seed",
+    ))
+
+    try:
+        twin_state = load_gold_state(GOLD_DIR / "state.json")
+
+        # Đảm bảo NOW và dự báo dùng cùng thời điểm snapshot.
+        if twin_state.as_of != state["as_of"]:
+            raise ValueError("Snapshot vừa thay đổi; hãy làm mới dashboard.")
+
+        as_of = pd.Timestamp(twin_state.as_of)
+        raw_dir = (
+            ROOT / "data" / "raw"
+            / f"{as_of.date().isoformat()}_seed{seed}"
+        )
+        if not raw_dir.is_dir():
+            raise FileNotFoundError(f"Không có dữ liệu raw: {raw_dir}")
+
+        with (ROOT / "config" / "scenarios.yaml").open(
+            encoding="utf-8"
+        ) as stream:
+            cfg = yaml.safe_load(stream)
+
+        horizon = float(cfg["default_horizon_min"])
+
+        plan = load_plan(
+            plan_id,
+            twin_state.as_of,
+            raw_dir=raw_dir,
+            plans_dir=ROOT / "config" / "plans",
+        )
+        demand_table = build_demand_table(
+            plan,
+            load_bom(ROOT / "config" / "generator.yaml"),
+            twin_state.as_of,
+            horizon,
+            seed,
+            "expected",
+        )
+        raw_demand = demand_table[CONTRACT_FIELDS].to_dict("records")
+
+        errors = check_bundle(
+            {
+                "current_state": asdict(twin_state),
+                "demand": raw_demand,
+            },
+            horizon_min=horizon,
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        baseline = build_baseline(
+            asdict(twin_state),
+            horizon_min=horizon,
+            sample_every_min=cfg["default_sample_every_min"],
+            seed=seed,
+            service_min=cfg["default_service_min"],
+        )
+        configs = [
+            ScenarioConfig(**item)
+            for item in [
+                baseline,
+                *build_whatif_scenarios(baseline, cfg["scenarios"]),
+            ]
+        ]
+
+        with st.spinner("Đang chạy mô phỏng..."):
+            results = run_scenarios(
+                configs,
+                [MaterialRequest(**item) for item in raw_demand],
+                initial_state=twin_state,
+            )
+
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
+        st.error(f"Không chạy được dự báo: {error}")
+        st.stop()
+
+    st.caption(
+        f"Snapshot: {twin_state.as_of} | Plan: {plan_id} | "
+        f"Horizon: {horizon:g} phút | Demand mới: {len(raw_demand)} lượt"
+    )
+    if plan_id == "spike_14_16_x3":
+        st.info("Kế hoạch giả định: demand tăng 3 lần trong khung 14:00–16:00.")
+
+    return results, cfg, as_of
 
 @st.cache_data
 def load_mock_simulation_timeline():
@@ -363,118 +473,145 @@ if menu == " NOW (Control Room)":
     )
 
 elif menu == "NEXT (Risk Timeline)":
-    st.markdown("# NEXT — Dự báo Năng lực & Timeline Rủi ro")
-    st.markdown("Phân tích trước các xung đột giữa kế hoạch sản xuất tương lai và công suất nguồn lực. Chạy bằng **Forecast Engine (Code của Cường)**.")
-    st.markdown("---")
-    
-    # 1. Đọc dữ liệu mô phỏng Production Plan
-    plan_df = pd.DataFrame([
-        {"hour_idx": 0, "line_id": "Line A", "product": "P100", "planned_qty": 450},
-        {"hour_idx": 1, "line_id": "Line B", "product": "P200", "planned_qty": 650},
-    ])
-    bom_mock = {
-        "P100": {"bom_packs_per_unit": {"M01": 0.2}},
-        "P200": {"bom_packs_per_unit": {"M04": 0.3}}
-    }
-    
-    # 2. Chạy logic Cường
-    future_reqs = forecast_demand(plan_df, bom_mock, horizon_hours=2)
-    spikes = detect_spikes(future_reqs, window_min=30.0, spike_threshold=1.0)
-    # Lấy state từ code hiện tại của Hải Anh để đồng bộ logic
-    timeline_c = build_risk_timeline(future_reqs, spikes, state, interval_min=30.0)
-    
-    # 3. Hiển thị UI
-    st.markdown("### ⏱️ Timeline Mốc thời gian & Trạng thái Rủi ro")
-    
-    for row in timeline_c:
-        risk = row["risk_level"].capitalize()
-        if risk == "High" or risk == "Critical":
-            border_c = "#EF4444"
-            bg_c = "rgba(239, 68, 68, 0.1)"
-            risk = "High"
-        elif risk == "Medium":
-            border_c = "#F59E0B"
-            bg_c = "rgba(245, 158, 11, 0.1)"
+    st.markdown("# NEXT — Timeline rủi ro")
+    results, cfg, as_of = run_dashboard_scenarios()
+    baseline = results["BASELINE"]
+
+    st.markdown("### Dự báo với nguồn lực hiện tại")
+    metrics = baseline["metrics"]
+    c1, c2 = st.columns(2)
+    c1.metric("Giao hoàn tất trong horizon", metrics["throughput_count"])
+    c2.metric("Chưa hoàn tất cuối horizon", metrics["unfinished_count"])
+
+    limits = cfg["bottleneck"]
+    rows = []
+
+    for point in baseline["timeline"]:
+        queues = point["queue_length"]
+        peak = max(queues.values())
+
+        # Cảnh báo theo queue tại từng mốc lấy mẫu của Twin.
+        if peak >= limits["peak_queue_severe"]:
+            risk = "Cao"
+        elif peak >= limits["peak_queue_notable"]:
+            risk = "Trung bình"
         else:
-            border_c = "#10B981"
-            bg_c = "rgba(16, 185, 129, 0.1)"
-            
-        time_label = f"Phút {row['time_min']} - {row['time_min'] + 30}"
-        
-        st.markdown(f"""
-            <div style="background-color: #111827; border: 1px solid #1F2937; border-left: 5px solid {border_c}; padding: 14px; border-radius: 8px; margin-bottom: 12px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <b style="font-size: 1.1rem; color: #F3F4F6;">⏰ {time_label}</b>
-                    <span style="background-color: {bg_c}; color: {border_c}; padding: 3px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: bold;">Rủi ro: {risk}</span>
-                </div>
-                <hr style="border-color: #1F2937; margin: 8px 0;">
-                <p style="margin: 0; color: #9CA3AF;"><b>Số lượt yêu cầu vật tư (Requests):</b> <span style="color: #F3F4F6;">{row['expected_requests']} lượt</span></p>
-                <p style="margin: 4px 0 0 0; color: #9CA3AF;"><b>Đánh giá tự động:</b> <i style="color: #E5E7EB;">{row['note']}</i></p>
-            </div>
-        """, unsafe_allow_html=True)
+            risk = "Thấp"
 
+        rows.append({
+            "Thời gian": as_of + pd.Timedelta(
+                minutes=point["time_min"]
+            ),
+            "AMR": queues["amr"],
+            "Packer": queues["packer"],
+            "AGV": queues["agv"],
+            "Đã giao": point["delivered_count"],
+            "Đã đến nhưng chưa xong": point["unfinished_arrived_count"],
+            "Rủi ro queue": risk,
+        })
+
+    timeline = pd.DataFrame(rows)
+    st.line_chart(
+        timeline.set_index("Thời gian")[["AMR", "Packer", "AGV"]]
+    )
+    st.dataframe(timeline, use_container_width=True, hide_index=True)
+    st.caption(
+        "Biểu đồ thể hiện số lượt đang chờ tại từng khâu. "
+        "Mức rủi ro được tính theo queue tại các mốc lấy mẫu, "
+        "chưa đánh giá nguy cơ trễ hạn vật tư."
+    )
 elif menu == " WHAT-IF (Scenario Lab)":
-    st.markdown("#  WHAT-IF — Mô phỏng Kịch bản & Tùy chỉnh Động")
-    st.markdown("Hệ thống **Decision Engine (Code của Cường)** sẽ chấm điểm tự động và xếp hạng các kịch bản!")
-    st.markdown("---")
-    
-    # 1. Đọc trọng số từ config của Cường
-    with open("config/scenarios.yaml", "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-        
-    st.markdown("### 🏆 Bảng Xếp hạng Kịch bản")
-    
-    # 2. Giả lập kết quả trả về từ Twin (vì Nhân chưa code)
-    fake_results = {
-        "BASELINE": {
-            "metrics": {
-                "throughput_count": 45, "avg_lead_time_min": 25.0, "avg_total_wait_min": 15.0,
-                "unfinished_count": 12, "utilization": {"amr": 0.85, "packer": 0.5, "agv": 0.4},
-                "peak_queue": {"amr": 6, "packer": 1, "agv": 0}
-            }
-        },
-        "+2AMR (Đề xuất)": {
-            "metrics": {
-                "throughput_count": 55, "avg_lead_time_min": 17.0, "avg_total_wait_min": 8.0,
-                "unfinished_count": 2, "utilization": {"amr": 0.65, "packer": 0.65, "agv": 0.5},
-                "peak_queue": {"amr": 2, "packer": 3, "agv": 1}
-            }
-        },
-        "+2WORKER": {
-            "metrics": {
-                "throughput_count": 48, "avg_lead_time_min": 24.0, "avg_total_wait_min": 14.0,
-                "unfinished_count": 9, "utilization": {"amr": 0.88, "packer": 0.3, "agv": 0.45},
-                "peak_queue": {"amr": 7, "packer": 0, "agv": 0}
-            }
-        }
-    }
-    
-    # 3. CHẠY HÀM CỦA CƯỜNG
-    ranked = rank(fake_results, weights=cfg["ranking_weights"])
-    
-    # 4. Hiển thị UI
-    for r in ranked:
-        is_top = (r.rank == 1)
-        border = "2px solid #3B82F6" if is_top else "1px solid #1F2937"
-        
-        with st.container():
-            st.markdown(f"""
-            <div style="background-color: #111827; border: {border}; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                <h3 style="margin-top: 0; color: {'#3B82F6' if is_top else '#F3F4F6'};">
-                    { "🏆 Hạng 1:" if is_top else f"Hạng {r.rank}:" } {r.scenario_id} (Điểm: {r.total_score:.2f})
-                </h3>
-                <p style="color: #9CA3AF; white-space: pre-wrap;">{r.explanation}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Hiển thị số liệu chênh lệch (Delta)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Throughput", f"{fake_results[r.scenario_id]['metrics']['throughput_count']} thùng", f"{r.kpi_deltas.get('throughput_count', 0):+.0f} thùng")
-            c2.metric("Lead Time", f"{fake_results[r.scenario_id]['metrics']['avg_lead_time_min']:.1f} m", f"{r.kpi_deltas.get('avg_lead_time_min', 0):+.1f} m", delta_color="inverse")
-            c3.metric("Wait Time", f"{fake_results[r.scenario_id]['metrics']['avg_total_wait_min']:.1f} m", f"{r.kpi_deltas.get('avg_total_wait_min', 0):+.1f} m", delta_color="inverse")
-            c4.metric("Unfinished", f"{fake_results[r.scenario_id]['metrics']['unfinished_count']}", f"{r.kpi_deltas.get('unfinished_count', 0):+.0f}", delta_color="inverse")
-            st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("# WHAT-IF — So sánh kịch bản")
+    results, cfg, as_of = run_dashboard_scenarios()
 
+    weights = dict(cfg["ranking_weights"])
+
+    # Không dùng KPI thiếu dữ liệu để chấm điểm.
+    missing_time_kpis = [
+        key
+        for key in ("avg_lead_time_min", "avg_total_wait_min")
+        if any(
+            result["metrics"].get(key) is None
+            for result in results.values()
+        )
+    ]
+    for key in missing_time_kpis:
+        weights[key] = 0.0
+
+    if missing_time_kpis:
+        st.info(
+            "Một số kịch bản chưa có lượt giao hoàn tất. "
+            "Lead/wait thiếu dữ liệu được hiển thị là —; "
+            "KPI tương ứng không tham gia chấm điểm."
+        )
+
+    ranked = rank(results, weights=weights)
+
+    summary = []
+    for item in ranked:
+        metrics = results[item.scenario_id]["metrics"]
+        summary.append({
+            "Hạng": item.rank,
+            "Kịch bản": item.scenario_id,
+            "Điểm": round(item.total_score, 3),
+            "Giao hoàn tất": metrics["throughput_count"],
+            "Chênh lệch giao so baseline": item.kpi_deltas[
+                "throughput_count"
+            ],
+            "Chưa hoàn tất": metrics["unfinished_count"],
+            "Lead (phút)": metrics["avg_lead_time_min"],
+            "Wait (phút)": metrics["avg_total_wait_min"],
+            "Bottleneck": item.bottleneck.primary or "—",
+        })
+
+    st.dataframe(
+        pd.DataFrame(summary),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("### Chi tiết KPI")
+    for item in ranked:
+        metrics = results[item.scenario_id]["metrics"]
+        with st.expander(
+            f"#{item.rank} · {item.scenario_id} · "
+            f"Điểm {item.total_score:.3f}",
+            expanded=item.rank == 1,
+        ):
+            cols = st.columns(4)
+            cols[0].metric(
+                "Giao hoàn tất (lượt)",
+                metrics["throughput_count"],
+                f"{item.kpi_deltas['throughput_count']:+.0f}",
+            )
+            cols[1].metric(
+                "Chưa hoàn tất",
+                metrics["unfinished_count"],
+                f"{item.kpi_deltas['unfinished_count']:+.0f}",
+                delta_color="inverse",
+            )
+            for col, key, label in (
+                (cols[2], "avg_lead_time_min", "Lead (phút)"),
+                (cols[3], "avg_total_wait_min", "Wait (phút)"),
+            ):
+                value = metrics[key]
+                col.metric(
+                    label,
+                    "—" if value is None else f"{value:.1f}",
+                    (
+                        f"{item.kpi_deltas[key]:+.1f}"
+                        if key not in missing_time_kpis else None
+                    ),
+                    delta_color="inverse",
+                )
+
+            # Explanation hiện tại coi None là 0, nên tránh hiển thị
+            # giải thích thời gian sai khi có KPI thiếu dữ liệu.
+            if missing_time_kpis:
+                st.write(item.bottleneck.explanation)
+            else:
+                st.text(item.explanation)
+                
 elif menu == " Validation & Trust":
     st.markdown("#  Validation & Trust")
 
