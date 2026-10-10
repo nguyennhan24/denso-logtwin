@@ -60,3 +60,11 @@ labor:
 excel:
   entry_every_min: 120      # tổ trưởng nhập log đóng gói mỗi 2 giờ -> dữ liệu trễ
   missing_row_prob: 0.05    # nhập tay -> đôi khi thiếu dòng
+
+# Sinh hàng loạt ground truth nhiều seed: python -m src.generator.batch
+# Ngày d -> ngày lịch = base_date (config/data_layer.yaml) + d - 1.
+# Seed thật: ngày anchor dùng s; ngày d khác dùng s + 1000 * (anchor_day - d)  -> s phải < 1000.
+batch:
+  first_day: 1
+  anchor_day: 21            # ngày demo; ngày 21 seed 42 = dữ liệu đang dùng ở Phase 4/6
+  seeds: [42, 7, 123]

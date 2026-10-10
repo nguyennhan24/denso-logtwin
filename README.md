@@ -166,11 +166,15 @@ python -c "import sys; print(sys.executable)"
 python -m src.generator --seed 42 --date 2026-10-21 --days 1
 ```
 
-Dữ liệu được ghi vào:
+Dữ liệu được ghi vào thư mục có **seed thật** trong tên (đổi seed không ghi đè nhau):
 
 ```text
-data/raw/2026-10-21/
+data/raw/2026-10-21_seed42/
 ```
+
+`--days N` sinh N ngày liên tiếp, ngày thứ i dùng seed `--seed + i` (tên thư mục ghi đúng seed đó).
+`--legacy-dir` ghi theo layout cũ `data/raw/<ngày>/` (không có seed). Gọi `generate_day()` từ Python
+vẫn mặc định layout cũ (`seed_in_dirname=False`) vì `src/validation/phase8.py` dùng layout này.
 
 Bao gồm:
 
@@ -210,7 +214,18 @@ order_status.parquet
 data_quality.json
 ```
 
-`--seed` của Data Layer dùng để đặt tên output; raw phải được sinh trước bằng seed tương ứng.
+`--seed` của Data Layer chọn raw `data/raw/<ngày>_seed<seed>/` và đặt tên output. Nếu chỉ có thư mục cũ
+`data/raw/<ngày>/` thì Data Layer dùng nó và in cảnh báo (không rõ seed thật). `--raw-dir` để chỉ định thẳng.
+
+Sinh nhiều seed cho cùng ngày (ground truth cho backtest), seed lấy từ `batch.seeds` trong `config/generator.yaml`:
+
+```bash
+python -m src.generator.batch                         # ngày 1..21 x seeds [42, 7, 123]
+python -m src.generator.batch --days 21 --seeds 42 7  # chỉ ngày 21
+```
+
+Ngày 21 dùng seed gốc `s`; ngày `d` khác dùng `s + 1000 × (21 − d)` (seed gốc phải < 1000), nên ngày 21 seed 42
+luôn là dữ liệu demo hiện tại.
 
 ### 3. Chạy baseline từ snapshot
 
@@ -316,6 +331,8 @@ python -m src.validation.backtest
 ```
 
 Lệnh đọc gold snapshot, replay demand thực tế trong horizon và so sánh với truth cùng ngày.
+Mặc định backtest tìm raw ở `data/raw/<ngày>/` (layout cũ); với raw có seed, truyền
+`--raw data/raw/2026-10-21_seed42`.
 
 Output:
 

@@ -1,20 +1,28 @@
-# Data dictionary — 6 feed thô và output của Data Layer (Phase 4)
+# Data dictionary — 6 feed thô, output của Data Layer (Phase 4) và Demand (Phase 6)
 
-Tài liệu này ghi lại những gì đọc được từ `src/generator/` và dữ liệu thật `data/raw/2026-10-21/`
+Tài liệu này ghi lại những gì đọc được từ `src/generator/` và dữ liệu thật `data/raw/2026-10-21_seed42/`
 (sinh bằng `python -m src.generator --seed 42 --date 2026-10-21`). Bổ sung cho `docs/feeds.md`.
 
 ## 1. Thư mục raw
 
 ```
-data/raw/<YYYY-MM-DD>/
+data/raw/<YYYY-MM-DD>_seed<seed>/        <- Generator CLI / batch (seed THẬT của rng ngày đó)
+data/raw/<YYYY-MM-DD>/                   <- layout cũ: generate_day() mặc định, phase8.py, --legacy-dir
   wms.csv  amr.csv  agv.csv  production.csv  labor.csv  excel.csv   <- 6 feed
   master.csv                                                         <- bảng mã tham chiếu (tĩnh)
-  _truth/requests.csv, _truth/events.csv                             <- ĐÁP ÁN, Data Layer KHÔNG đọc
+  _truth/requests.csv, _truth/events.csv                             <- ĐÁP ÁN, Data Layer / Demand KHÔNG đọc
 ```
 
-Tên thư mục chỉ có ngày, **không có seed**. `--days N` của Generator dùng seed = seed gốc + i, nên
-`data/raw/2026-10-21` có thể là seed 42 (lệnh ở trên) hoặc seed 62 (`--date 2026-10-01 --days 21`).
-Data Layer ghi output vào `<ngày>_seed<seed>` để phân biệt.
+Từ Phase 6, `python -m src.generator` ghi vào `<ngày>_seed<seed>` nên đổi seed không ghi đè nhau. `--days N`
+dùng seed = seed gốc + i cho ngày thứ i, và tên thư mục ghi đúng seed đó. Thư mục cũ `data/raw/<ngày>/` không rõ seed
+(ngày 2026-10-21 có thể là seed 42 hoặc seed 62 nếu sinh bằng `--date 2026-10-01 --days 21`); Data Layer và Demand
+chỉ dùng nó khi không có thư mục có seed, và in cảnh báo.
+
+Sinh hàng loạt (`python -m src.generator.batch`, seed gốc trong `batch.seeds` của `config/generator.yaml`):
+ngày 21 dùng seed gốc `s`, ngày `d` khác dùng `s + 1000 × (21 − d)`, yêu cầu `0 ≤ s < 1000` → không hai thư mục nào
+trùng seed, và ngày 21 seed 42 luôn là dữ liệu demo. Phase 8 (`src/validation/phase8.py`) tự sinh riêng 1 seed/ngày
+(seed 42 + i) vào `data/results/phase8_data/raw/<ngày>/`; batch không làm lại việc đó mà bổ sung nhiều seed cho
+cùng một ngày.
 
 Số dòng ngày 21 seed 42: wms 430, amr 1719, agv 428, production 32, labor 6, excel 406, master 10.
 
