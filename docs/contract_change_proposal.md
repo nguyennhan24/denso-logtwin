@@ -4,6 +4,7 @@ Người đọc: cả nhóm (Nhân — Twin, Cường — Scenario, Hải Anh �
 Trạng thái: **đề xuất, chưa áp dụng vào contract**. Không trường nào của v0.1 bị đổi tên, đổi kiểu hay xóa.
 Cập nhật 2026-10-09: thêm `est_remaining_min`, `completion_unconfirmed`, `created_offset_min`, `resource_counts`,
 `blocked_jobs` (mục A) và vấn đề B7–B9.
+Cập nhật 2026-10-10 (Phase 6): thêm B10 (`need_by_min` cho demand).
 
 ## A. Trường đã THÊM vào output (giữ nguyên toàn bộ trường v0.1)
 
@@ -100,6 +101,31 @@ Có yêu cầu đổi `blocked` thành list object `{amr_id, request_id}`. `bloc
 `contract_check` và đã thông báo cho nhóm ở mục A, nên đổi kiểu sẽ làm vỡ người đọc hiện có.
 **Đã làm:** thêm trường riêng `blocked_jobs`, giữ nguyên `blocked`. contract_check kiểm `blocked_jobs` có đúng các xe
 trong `blocked`.
+
+### B10. `MaterialRequest.need_by_min` — deadline cho demand tương lai (Phase 6, Trung)
+Người duyệt: **Nhân** (Twin phải đọc trường mới), **Cường** (KPI starvation / timeline NEXT). Chưa duyệt.
+
+Bối cảnh: Phase 6 sinh demand tương lai từ production plan (`src/demand/`). Mỗi lượt có hạn cần hàng
+`need_by = created_at + need_by_buffer_min` (30 phút, cùng quy tắc với Generator và cột `need_by` của WMS).
+Contract v0.1 mục 2 không có deadline, nên Twin chỉ đo được wait / lead time, **không** biết lượt nào giao trễ hạn
+(line thiếu vật tư = starvation) — đây là thông tin timeline NEXT cần nhất ("lúc nào line bắt đầu thiếu hàng").
+
+**Đã làm (v0.1, chỉ thêm, ngoài request):** cột `need_by_at` (datetime tz) trong
+`data/gold/<ngày>_seed<seed>/demand_<plan>_HHMM.parquet`. File JSON đưa vào Twin / `runner --demand` vẫn đúng 6 trường;
+**chưa duyệt thì không đưa vào input Twin** (Twin dựng `MaterialRequest(**r)`, khóa lạ làm Twin lỗi).
+
+Đề xuất v0.2:
+- Thêm `need_by_min` (number, **optional**, mặc định `null`) vào `MaterialRequest`: phút từ `as_of`, cùng gốc với
+  `arrival_min`, ràng buộc `need_by_min ≥ arrival_min`. Có thể âm cho WIP đã quá hạn trước snapshot (nếu B8 cho phép
+  thời gian âm) — cần chốt cùng B8.
+- Twin (Nhân): thêm field optional vào dataclass; khi request được `delivered` sau `need_by_min` thì ghi nhận trễ hạn.
+- KPI (Cường): ví dụ `late_count`, `max_lateness_min`, và trên timeline số request đã quá hạn mà chưa giao
+  (starvation risk). Ý nghĩa KPI do Cường quyết, Data chỉ cung cấp trường.
+- Data Layer: WIP đã có `need_by` trong WMS (`due_at` trong order_status) → điền được `need_by_min` cho cả WIP.
+
+Ai bị ảnh hưởng: Twin (`entities.py`, `metrics.py`), runner/ranking (KPI mới), `contracts/validate_contracts.py`
+(kiểm `need_by_min ≥ arrival_min` khi có), fixture `contracts_v0.1_example.json` (tăng version 0.2).
+Không thêm `priority`: không nguồn nào có (B3).
 
 ## C. Cho Hải Anh (Dashboard)
 `app/streamlit_app.py` đang đọc `data/unified/current_state.json`. Đề xuất đổi sang đường dẫn cố định

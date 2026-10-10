@@ -1,0 +1,9 @@
+# Plan "spike_14_16_x3": KỊCH BẢN GIẢ ĐỊNH cho demo NEXT — planned_qty x3 cho các giờ 14:00 và 15:00.
+# Generator ngày 21 KHÔNG có spike (hour_profile lúc 14h = 0.6, giờ đổi ca); đây là plan "nếu ngày mai
+# kế hoạch tăng đột biến" để Twin thấy hàng đợi tương lai. Không dùng để so với _truth.
+plan_id: spike_14_16_x3
+description: Giả định demand tăng 3 lần trong khung 14:00-16:00 (không có trong dữ liệu Generator)
+base: feed
+adjust:
+  - {from: "14:00", to: "16:00", factor: 3.0}
+rows: []
